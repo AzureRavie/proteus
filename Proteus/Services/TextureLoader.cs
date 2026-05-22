@@ -247,7 +247,7 @@ public class TextureLoader
     // at zero. Lumina computes negative mipmap allocations from those zeroed offsets and passes a
     // negative count to Buffer.BlockCopy, which throws ArgumentException. Pre-patch the header so
     // MipCount only reflects the offsets that are actually populated.
-    private static byte[] SanitizeTexBytes(byte[] bytes)
+    internal static byte[] SanitizeTexBytes(byte[] bytes)
     {
         if (bytes.Length < 80) return bytes;
         int mipCount = bytes[14] & 0x7F;
@@ -255,6 +255,25 @@ public class TextureLoader
 
         uint prev = BitConverter.ToUInt32(bytes, 28);
         if (prev == 0)
+        {
+            var p = (byte[])bytes.Clone();
+            p[14] = (byte)((p[14] & 0x80) | 1);
+            return p;
+        }
+
+        // Some TexTools exports write a full MipCount but a bogus OffsetToSurface table whose
+        // values are tiny yet still monotonic and in-bounds — e.g. surf0=80, surf1=343 for a
+        // 2048×2048 BC7 whose mip 0 alone occupies 4 MB. The monotonic/in-bounds loop below
+        // accepts those, so Lumina then reads mip 0 from a 263-byte slice and decodes solid
+        // magenta. Guard against it: if the second surface starts before mip 0 could possibly
+        // end, the table is unusable — collapse to a single mip so Lumina reads mip 0 from the
+        // contiguous block right after the header (verified to decode correctly).
+        uint fmt = BitConverter.ToUInt32(bytes, 4);
+        int w    = BitConverter.ToUInt16(bytes, 8);
+        int h    = BitConverter.ToUInt16(bytes, 10);
+        long mip0 = Mip0ByteSize(fmt, w, h);
+        uint surf1 = BitConverter.ToUInt32(bytes, 32);
+        if (mip0 > 0 && surf1 != 0 && surf1 < prev + mip0)
         {
             var p = (byte[])bytes.Clone();
             p[14] = (byte)((p[14] & 0x80) | 1);
@@ -278,6 +297,29 @@ public class TextureLoader
         var patched = (byte[])bytes.Clone();
         patched[14] = (byte)((patched[14] & 0x80) | (validMips & 0x7F));
         return patched;
+    }
+
+    // Byte size of mip level 0 for a .tex pixel format at the given dimensions.
+    // Returns 0 for formats we don't recognise so callers skip the consistency check
+    // rather than risk a false positive. Format codes are Lumina TexFile.TextureFormat values.
+    internal static long Mip0ByteSize(uint format, int w, int h)
+    {
+        if (w <= 0 || h <= 0) return 0;
+        long px = (long)w * h;
+        long blocks = (long)Math.Max(1, (w + 3) / 4) * Math.Max(1, (h + 3) / 4);
+        return format switch
+        {
+            0x1130 or 0x1131                       => px,        // L8 / A8
+            0x1440 or 0x1441                       => px * 2,    // B4G4R4A4 / B5G5R5A1
+            0x1450 or 0x1451                       => px * 4,    // B8G8R8A8 / B8G8R8X8
+            0x2140                                 => px * 2,    // R16F
+            0x2150                                 => px * 4,    // R32F
+            0x2460                                 => px * 8,    // R16G16B16A16F
+            0x2470                                 => px * 16,   // R32G32B32A32F
+            0x3420                                 => blocks * 8,  // BC1 (DXT1)
+            0x3430 or 0x3431 or 0x6230 or 0x6432   => blocks * 16, // BC2 / BC3 / BC5 / BC7
+            _                                      => 0,         // unknown — don't second-guess
+        };
     }
 
     private static string ReadNullTerminatedString(byte[] strings, int offset)
