@@ -57,16 +57,16 @@ public class IpcProvider : IDisposable {
     }
     
     private List<IpcOverlayDetail> GetOverlays() {
-        return _compositor.LastDiscovered.Select(overlay => (
-            overlay.ModDirectory, 
+        return _compositor.LastDiscovered.Where(overlay => overlay.Enabled).Select(overlay => (
+            overlay.ModDirectory,
             overlay.ModName,
             overlay.Priority,
             overlay.Metadata.OptionGroups?.ToDictionary(g => g.PenumbraGroupName, g => g.Options.Select(o => o.Name).ToList())
           )).ToList();
     }
-    
+
     private List<IpcOverlayDetail> GetActiveOverlays() {
-        return _compositor.LastDiscovered.Select(overlay => (
+        return _compositor.LastDiscovered.Where(overlay => overlay.Enabled).Select(overlay => (
             overlay.ModDirectory, 
             overlay.ModName,
             overlay.Priority,

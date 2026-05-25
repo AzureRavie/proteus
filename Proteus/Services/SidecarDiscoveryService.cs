@@ -12,6 +12,7 @@ public record OverlayEntry(
     string ModDirectory,
     string ModName,
     int Priority,
+    bool Enabled,        // current enabled state in the player's Penumbra collection
     ProteusMetadata Metadata,
     string SidecarRoot   // absolute path to the Proteus/ subfolder
 );
@@ -44,11 +45,20 @@ public class SidecarDiscoveryService
     }
 
     /// <summary>
-    /// Discover all enabled Penumbra mods that contain a Proteus/ sidecar.
-    /// Returns them ordered by priority ascending (lowest priority = bottom of composite stack).
-    /// The managed Proteus mod itself is excluded.
+    /// Discover all Penumbra mods that contain a Proteus/ sidecar, carrying each mod's current
+    /// enabled state and priority from the player's collection. Ordered by priority ascending
+    /// (lowest priority = bottom of composite stack). The managed Proteus mod is excluded.
+    /// Used by the UI so disabled mods stay listed (and can be re-enabled).
     /// </summary>
-    public List<OverlayEntry> DiscoverEnabled()
+    public List<OverlayEntry> DiscoverAll() => Discover(enabledOnly: false);
+
+    /// <summary>
+    /// Like <see cref="DiscoverAll"/> but only mods currently enabled in Penumbra — the set the
+    /// compositor actually composites.
+    /// </summary>
+    public List<OverlayEntry> DiscoverEnabled() => Discover(enabledOnly: true);
+
+    private List<OverlayEntry> Discover(bool enabledOnly)
     {
         var modsRoot = penumbra.GetModDirectory();
         if (modsRoot == null) return [];
@@ -74,12 +84,14 @@ public class SidecarDiscoveryService
             if (!File.Exists(metaPath)) continue;
 
             var settings = penumbra.GetModSettings(collId.Value, modDir);
-            if (settings == null || !settings.Value.Enabled) continue;
+            if (settings == null) continue;
+            if (enabledOnly && !settings.Value.Enabled) continue;
 
             var metadata = TryParseMetadata(metaPath);
             if (metadata == null) continue;
 
-            results.Add(new OverlayEntry(modDir, modName, settings.Value.Priority, metadata, sidecarDir));
+            results.Add(new OverlayEntry(modDir, modName, settings.Value.Priority,
+                settings.Value.Enabled, metadata, sidecarDir));
         }
 
         results.Sort((a, b) => a.Priority.CompareTo(b.Priority));

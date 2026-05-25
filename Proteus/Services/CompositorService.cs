@@ -96,7 +96,7 @@ public class CompositorService : IDisposable
         // Without this guard: RedrawPlayer() → Glamourer re-apply → OnModSettingChanged → loop.
         if (change is ModSettingChange.EnableState or ModSettingChange.MultiEnableState)
         {
-            var current = discovery.DiscoverEnabled();
+            var current = discovery.DiscoverAll();
             if (current.Count == 0) return;
             if (DiscoveredSetsEqual(current, LastDiscovered)) return;
             LastDiscovered = current;
@@ -144,7 +144,7 @@ public class CompositorService : IDisposable
     {
         // Glamourer applied a design / reset / reapplied state on the local player.
         // Diff the discovered set against the last known set — only recomposite if something changed.
-        var current = discovery.DiscoverEnabled();
+        var current = discovery.DiscoverAll();
 
         // Empty results mean Penumbra's IPC is temporarily unavailable (e.g. mid-reload).
         // Treat empty as "no information" rather than "no mods" to avoid overwriting a good
@@ -160,15 +160,16 @@ public class CompositorService : IDisposable
         TriggerRecomposite("glamourer-design");
     }
 
-    // Set-based comparison — order-independent. DiscoverEnabled sorts by priority but the sort
-    // is not stable, so two mods with equal priority can swap positions between calls.
+    // Set-based comparison — order-independent. Discovery sorts by priority but the sort is not
+    // stable, so two mods with equal priority can swap positions between calls. Compares enabled
+    // state too so toggling a mod on/off in Penumbra triggers a recomposite.
     private static bool DiscoveredSetsEqual(List<OverlayEntry> a, List<OverlayEntry> b)
     {
         if (a.Count != b.Count) return false;
-        var lookup = new Dictionary<string, int>(a.Count, StringComparer.OrdinalIgnoreCase);
-        foreach (var e in a) lookup[e.ModDirectory] = e.Priority;
+        var lookup = new Dictionary<string, (int Priority, bool Enabled)>(a.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var e in a) lookup[e.ModDirectory] = (e.Priority, e.Enabled);
         foreach (var e in b)
-            if (!lookup.TryGetValue(e.ModDirectory, out var p) || p != e.Priority)
+            if (!lookup.TryGetValue(e.ModDirectory, out var v) || v.Priority != e.Priority || v.Enabled != e.Enabled)
                 return false;
         return true;
     }
@@ -235,14 +236,15 @@ public class CompositorService : IDisposable
             penumbra.ReloadModDirectory(SidecarDiscoveryService.ManagedModDir);
             Thread.Sleep(80);
 
-            var allEntries = discovery.DiscoverEnabled();
+            // Discover ALL sidecar mods (incl. disabled) so the UI can list and re-enable them;
+            // composite only the ones enabled in Penumbra, in priority order.
+            var allEntries = discovery.DiscoverAll();
             if (ct.IsCancellationRequested) return;
-
-            CheckManagedModHealth(allEntries);
 
             LastDiscovered = allEntries;
 
-            var entries = ApplyOverrides(allEntries);
+            var entries = allEntries.Where(e => e.Enabled).OrderBy(e => e.Priority).ToList();
+            CheckManagedModHealth(entries);
 
             if (entries.Count == 0)
             {
@@ -607,19 +609,6 @@ public class CompositorService : IDisposable
             LastResult = new CompositorResult { Success = false, ErrorMessage = ex.Message };
             ResultChanged?.Invoke();
         }
-    }
-
-    // ── Override application ─────────────────────────────────────────────────
-
-    private List<OverlayEntry> ApplyOverrides(List<OverlayEntry> entries)
-    {
-        return entries
-            .Where(e => !(config.ModOverrides.TryGetValue(e.ModDirectory, out var ov) && ov.Disabled))
-            .Select(e => config.ModOverrides.TryGetValue(e.ModDirectory, out var ov) && ov.PriorityOverride.HasValue
-                ? e with { Priority = ov.PriorityOverride.Value }
-                : e)
-            .OrderBy(e => e.Priority)
-            .ToList();
     }
 
     // ── Managed mod helpers ──────────────────────────────────────────────────

@@ -24,6 +24,8 @@ public class StatusWindow : Window
     private readonly Dictionary<string, HashSet<int>> _indexRowCache = new();
     // Key: modDir → selected index into the active-options list (for the dropdown).
     private readonly Dictionary<string, int> _colorEditorSelection = new();
+    // Key: modDir → priority value being dragged; committed to Penumbra on edit-end.
+    private readonly Dictionary<string, int> _priorityEdits = new();
 
     public StatusWindow(
         CompositorService compositor,
@@ -92,21 +94,21 @@ public class StatusWindow : Window
             ImGui.TableSetupColumn("Overlays", ImGuiTableColumnFlags.WidthFixed, 70);
             ImGui.TableHeadersRow();
 
+            // Enable/priority controls write straight through to Penumbra (Proteus keeps no
+            // override state of its own); both reflect the mod's live Penumbra values.
+            var collId = penumbra.GetPlayerCollectionId();
+
             foreach (var entry in mods)
             {
                 ImGui.TableNextRow();
 
-                config.ModOverrides.TryGetValue(entry.ModDirectory, out var ov);
-
-                // Checkbox
+                // Enable checkbox — toggles the mod in Penumbra.
                 ImGui.TableNextColumn();
-                bool active = ov == null || !ov.Disabled;
-                if (ImGui.Checkbox($"##en_{entry.ModDirectory}", ref active))
+                bool active = entry.Enabled;
+                if (ImGui.Checkbox($"##en_{entry.ModDirectory}", ref active) && collId.HasValue)
                 {
-                    if (ov == null) { ov = new ModOverride(); config.ModOverrides[entry.ModDirectory] = ov; }
-                    ov.Disabled = !active;
-                    config.Save();
-                    compositor.TriggerRecomposite("override-enable");
+                    penumbra.SetModEnabled(collId.Value, entry.ModDirectory, active);
+                    compositor.TriggerRecomposite("penumbra-enable");
                 }
 
                 // Mod name (dimmed when disabled)
@@ -119,19 +121,18 @@ public class StatusWindow : Window
                     }
                 }
 
-                // Priority (drag to edit, Ctrl+click to type)
+                // Priority (drag to edit, Ctrl+click to type) — writes to Penumbra on edit-end.
                 ImGui.TableNextColumn();
-                int pri = ov?.PriorityOverride ?? entry.Priority;
+                int pri = _priorityEdits.TryGetValue(entry.ModDirectory, out var pe) ? pe : entry.Priority;
                 ImGui.SetNextItemWidth(55);
-                if (ImGui.DragInt($"##pri_{entry.ModDirectory}", ref pri, 0.1f)) 
-                {
-                    if (ov == null) { ov = new ModOverride(); config.ModOverrides[entry.ModDirectory] = ov; }
-                    ov.PriorityOverride = pri;
-                }
+                if (ImGui.DragInt($"##pri_{entry.ModDirectory}", ref pri, 0.1f))
+                    _priorityEdits[entry.ModDirectory] = pri;
                 if (ImGui.IsItemDeactivatedAfterEdit())
                 {
-                    config.Save();
-                    compositor.TriggerRecomposite("priority-change");
+                    _priorityEdits.Remove(entry.ModDirectory);
+                    if (collId.HasValue)
+                        penumbra.SetModPriority(collId.Value, entry.ModDirectory, pri);
+                    compositor.TriggerRecomposite("penumbra-priority");
                 }
 
                 // Colors button + popup editor
