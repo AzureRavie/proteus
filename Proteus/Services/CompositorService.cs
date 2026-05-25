@@ -63,6 +63,7 @@ public class CompositorService : IDisposable
         penumbra.ModAdded          += OnModAdded;
         penumbra.ModDeleted        += OnModDeleted;
         penumbra.PenumbraReady     += OnPenumbraReady;
+        penumbra.PlayerCollectionChanged += OnPlayerCollectionChanged;
         glamourer.LocalPlayerStateChanged += OnGlamourerStateChanged;
     }
 
@@ -72,6 +73,7 @@ public class CompositorService : IDisposable
         penumbra.ModAdded          -= OnModAdded;
         penumbra.ModDeleted        -= OnModDeleted;
         penumbra.PenumbraReady     -= OnPenumbraReady;
+        penumbra.PlayerCollectionChanged -= OnPlayerCollectionChanged;
         glamourer.LocalPlayerStateChanged -= OnGlamourerStateChanged;
 
         currentCts?.Cancel();
@@ -138,6 +140,14 @@ public class CompositorService : IDisposable
         // real composite once settings are available.
         if (discovery.DiscoverEnabled().Count > 0)
             TriggerRecomposite("PenumbraReady");
+    }
+
+    private void OnPlayerCollectionChanged()
+    {
+        // The collection assigned to the player changed — the enabled mod set, priorities and
+        // option selections are all collection-scoped, so the whole composite must be recomputed.
+        if (!config.PluginEnabled) return;
+        TriggerRecomposite("collection-changed");
     }
 
     private void OnGlamourerStateChanged()

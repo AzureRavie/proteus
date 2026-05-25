@@ -29,14 +29,21 @@ public class PenumbraBridge : IDisposable
     private readonly EventSubscriber<ModSettingChange, Guid, string, bool> modSettingChangedSub;
     private readonly EventSubscriber<string> modAddedSub;
     private readonly EventSubscriber<string> modDeletedSub;
+    private readonly EventSubscriber<nint, int> gameObjectRedrawnSub;
     private readonly EventSubscriber initializedSub;
     private readonly EventSubscriber disposedSub;
+
+    // Last collection GUID seen for the local player (object 0). Penumbra has no
+    // "collection changed" event, so we detect reassignment on the player's redraw.
+    private Guid? _lastPlayerCollection;
 
     public bool IsAvailable { get; private set; }
 
     public event Action<ModSettingChange, Guid, string, bool>? ModSettingChanged;
     public event Action<string>? ModAdded;
     public event Action<string>? ModDeleted;
+    /// <summary>Fired when the collection assigned to the local player changes.</summary>
+    public event Action? PlayerCollectionChanged;
     /// <summary>Fired when Penumbra becomes available (including late initialization after plugin load).</summary>
     public event Action? PenumbraReady;
 
@@ -64,6 +71,7 @@ public class PenumbraBridge : IDisposable
             modDir => ModAdded?.Invoke(modDir));
         modDeletedSub = Penumbra.Api.IpcSubscribers.ModDeleted.Subscriber(pluginInterface,
             modDir => ModDeleted?.Invoke(modDir));
+        gameObjectRedrawnSub = Penumbra.Api.IpcSubscribers.GameObjectRedrawn.Subscriber(pluginInterface, OnGameObjectRedrawn);
         initializedSub = Penumbra.Api.IpcSubscribers.Initialized.Subscriber(pluginInterface, OnPenumbraInitialized);
         disposedSub    = Penumbra.Api.IpcSubscribers.Disposed.Subscriber(pluginInterface, OnPenumbraDisposed);
 
@@ -80,6 +88,21 @@ public class PenumbraBridge : IDisposable
     private void OnPenumbraDisposed()
     {
         IsAvailable = false;
+    }
+
+    // Penumbra redraws a character when its assigned collection changes. There is no dedicated
+    // collection-changed event, so on the local player's redraw we compare the effective
+    // collection GUID against the last seen one and fire PlayerCollectionChanged when it differs.
+    private void OnGameObjectRedrawn(nint _, int objectTableIndex)
+    {
+        if (objectTableIndex != 0) return; // local player only
+        var current = GetPlayerCollectionId();
+        if (current == null) return;
+        if (_lastPlayerCollection == current) return;
+
+        bool first = _lastPlayerCollection == null;
+        _lastPlayerCollection = current;
+        if (!first) PlayerCollectionChanged?.Invoke();
     }
 
     private void CheckAvailability()
@@ -211,6 +234,7 @@ public class PenumbraBridge : IDisposable
         modSettingChangedSub.Dispose();
         modAddedSub.Dispose();
         modDeletedSub.Dispose();
+        gameObjectRedrawnSub.Dispose();
         initializedSub.Dispose();
         disposedSub.Dispose();
     }
