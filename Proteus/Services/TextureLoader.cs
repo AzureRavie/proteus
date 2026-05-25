@@ -456,6 +456,34 @@ public class TextureLoader
         return (shaderName, ids);
     }
 
+    // Patches an existing float-array constant's values in-place, found by ID. Writes up to
+    // vals.Length floats (4 bytes each) into the constant's ShaderValues slot. Returns
+    // (patched, true) when the constant is present with room; otherwise (originalClone, false).
+    public static (byte[] data, bool found) PatchConstantValues(byte[] mtrl, uint id, params float[] vals)
+    {
+        if (!TryParseMtrlHeader(mtrl, out _, out _, out _, out int constCount, out _, out int constBase, out int svBase))
+            return ((byte[])mtrl.Clone(), false);
+
+        int need = vals.Length * 4;
+        for (int i = 0; i < constCount; i++)
+        {
+            int e = constBase + i * 8;
+            if (e + 8 > mtrl.Length) break;
+            if (BitConverter.ToUInt32(mtrl, e) != id) continue;
+
+            int valOffset = BitConverter.ToUInt16(mtrl, e + 4);
+            int valCount  = BitConverter.ToUInt16(mtrl, e + 6);
+            int byteOff   = svBase + valOffset;
+            if (valCount < need || byteOff + need > mtrl.Length) break;
+
+            var result = (byte[])mtrl.Clone();
+            for (int k = 0; k < vals.Length; k++)
+                BitConverter.TryWriteBytes(result.AsSpan(byteOff + k * 4), vals[k]);
+            return (result, true);
+        }
+        return ((byte[])mtrl.Clone(), false);
+    }
+
     // Patches the float32 emissive-color constant (ID 0x38A64362) if present.
     // Returns (patched, true) on success; (originalClone, false) if not found.
     public static (byte[] data, bool found) PatchEmissiveColorConstant(byte[] mtrl, float r, float g, float b)

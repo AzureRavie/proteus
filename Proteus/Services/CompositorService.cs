@@ -562,12 +562,20 @@ public class CompositorService : IDisposable
                                     combinedRows[pairIdx] = row;
                         }
 
+                        // Switch the skin-type shader key to the glow variant; this is what enables
+                        // emissive on skin.shpk (body skin-type is 0x2BDB45F1). Values below mirror
+                        // the canonical LooseTextureCompiler skin_glow.mtrl.
                         raw = TextureLoader.EnsureShaderKey(raw, 0x380CAED0u, 0x72E697CDu);
                         raw = TextureLoader.PatchColorTableEmissive(raw, combinedRows);
 
-                        // Ensure emissive color constant (0x38A64362) is neutral [1, 1, 1] so the
-                        // glow color matches the diffuse color set in the color picker exactly.
-                        // Some skins omit this constant; without it the glow defaults to black.
+                        // The body sets 0x2E60B071 to [200,200]; under the glow skin-type that value
+                        // makes the material render so that seams between separate body models (e.g.
+                        // a split torso/legs) become visible. skin_glow.mtrl uses [100,100].
+                        raw = TextureLoader.PatchConstantValues(raw, 0x2E60B071u, 100f, 100f).data;
+
+                        // Emissive color constant: the per-pixel glow is this color masked by the
+                        // normal-map alpha, so it must be non-zero. White makes the glow take the
+                        // configured per-row color. Add the constant if the material lacks it.
                         var (rawEmConst, emConstPatched) = TextureLoader.PatchEmissiveColorConstant(raw, 1f, 1f, 1f);
                         raw = emConstPatched ? rawEmConst : TextureLoader.EnsureEmissiveColorConstant(raw, 1f, 1f, 1f);
 
