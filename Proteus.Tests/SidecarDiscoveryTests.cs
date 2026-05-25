@@ -282,7 +282,7 @@ public class SidecarDiscoveryTests
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static OverlayEntry Entry(ProteusMetadata meta, string? sidecarRoot = null) =>
-        new("mod1", "Mod 1", 10, meta, sidecarRoot ?? "/tmp/mod1/Proteus");
+        new("mod1", "Mod 1", 10, true, meta, sidecarRoot ?? "/tmp/mod1/Proteus");
 
     private sealed class TempDirectory : IDisposable
     {
