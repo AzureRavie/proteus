@@ -468,6 +468,29 @@ public class CompositorService : IDisposable
                     if (normalOv != null && baseN is { Length: > 0 })
                         AlphaComposite(baseN, normalOv, wN, hN, CovAt(wN, hN));
 
+                    // ── Phase B2: suppress skin-color influence under the overlay ──
+                    // skin.shpk reads the normal map's BLUE channel as "skin color influence":
+                    // white = the character's skin tone is multiplied onto the diffuse. Overlays
+                    // are baked into the skin diffuse, so without this the shader re-tints every
+                    // overlay pixel by skin tone (darker skin → darker overlay, even when opaque).
+                    // Fade the influence out by diffuse coverage so opaque fabric renders at its
+                    // authored colour while sheer gaps keep skin tone. Diffuse overlays only —
+                    // normal-only overlays add relief, not colour, so they keep skin tinting.
+                    if (desc.Diffuse != null && texPaths.Normal != null)
+                    {
+                        if (baseN == null)
+                        {
+                            baseN = LoadBaseNormal(texPaths.Normal, ref wN, ref hN);
+                            if (anyEmissive && baseN.Length > 0)
+                                for (int ai = 3; ai < baseN.Length; ai += 4) baseN[ai] = 0;
+                        }
+                        if (baseN.Length > 0)
+                        {
+                            var scMask = CovAt(wN, hN);
+                            if (scMask != null) SuppressSkinColorInfluence(baseN, scMask, wN, hN);
+                        }
+                    }
+
                     // ── Phase C: emissive → normal alpha ──────────────────────
                     // skin.shpk: normal alpha = per-pixel emissive intensity (key 0x380CAED0).
                     bool thisOverlayHasEmissive = rows.Values.Any(r => r.A.Emissive > 0.001f || r.B.Emissive > 0.001f);
@@ -843,6 +866,22 @@ public class CompositorService : IDisposable
             dst[i]     = (byte)(src[i]     * a + dst[i]     * ia);
             dst[i + 1] = (byte)(src[i + 1] * a + dst[i + 1] * ia);
             dst[i + 2] = (byte)(src[i + 2] * a + dst[i + 2] * ia);
+        }
+    }
+
+    // Fade the normal map's BLUE channel (skin.shpk "skin color influence") toward black in
+    // proportion to overlay coverage. White blue → the shader multiplies the diffuse by the
+    // character's skin tone; black → the authored diffuse colour renders untinted. cov.alpha is
+    // the diffuse overlay's opacity: opaque pixels lose skin tint entirely (so an opaque overlay
+    // looks the same on any skin tone), sheer pixels keep it (bare skin still shows through gaps).
+    internal static void SuppressSkinColorInfluence(byte[] baseN, byte[] cov, int w, int h)
+    {
+        int len = w * h * 4;
+        for (int i = 0; i < len; i += 4)
+        {
+            float a = cov[i + 3] / 255f;
+            if (a <= 0f) continue;
+            baseN[i + 2] = (byte)(baseN[i + 2] * (1f - a));
         }
     }
 
