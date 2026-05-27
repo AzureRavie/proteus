@@ -501,9 +501,11 @@ public class CompositorService : IDisposable
                         }
                         else ApplyFlatOverlay(baseD, diffuseOv, row16A, wD, hD);
                     }
-                    else if (desc.Diffuse == null && normalOv != null && texPaths.Diffuse != null)
+                    else if (desc.Diffuse == null && normalOv != null && texPaths.Diffuse != null && desc.GenerateDiffuse)
                     {
-                        // Normal-only overlay: apply synthesized white tint to the diffuse channel.
+                        // Normal-only overlay: apply synthesized tint (Row 16 color) to the diffuse
+                        // channel. Skipped when GenerateDiffuse is false — the author wants the normal
+                        // (and any mask) applied without altering the skin diffuse.
                         if (baseD == null)
                         {
                             var diffDisk = penumbra.ResolvePlayer(texPaths.Diffuse);

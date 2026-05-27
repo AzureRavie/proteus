@@ -67,6 +67,15 @@ public class OverlayDescriptor
     /// </summary>
     [JsonPropertyName("Index")]
     public string? Index { get; set; }
+
+    /// <summary>
+    /// For a normal-only overlay (no Diffuse), whether to synthesize a diffuse tint from the
+    /// normal's coverage and Row 16's color. Default true (legacy behaviour). Set false when the
+    /// overlay should only touch the normal/mask and leave the skin diffuse untouched
+    /// (e.g. a wetness normal+mask). Ignored when a Diffuse overlay is present.
+    /// </summary>
+    [JsonPropertyName("GenerateDiffuse")]
+    public bool GenerateDiffuse { get; set; } = true;
 }
 
 /// <summary>Maps one Penumbra option group to per-option overlay sets.</summary>
