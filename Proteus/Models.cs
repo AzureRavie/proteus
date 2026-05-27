@@ -76,6 +76,16 @@ public class OverlayDescriptor
     /// </summary>
     [JsonPropertyName("GenerateDiffuse")]
     public bool GenerateDiffuse { get; set; } = true;
+
+    /// <summary>
+    /// How strongly to mask the character's skin tone out of this overlay's opaque pixels (0–1).
+    /// Omitted (null) = full masking — the default; a bright opaque overlay renders at its authored
+    /// color on any skin tone. 0 = no masking: skin tone shows through fully (use for tattoos,
+    /// decals, or anything meant to sit on the skin and take its color). Multiplies the user's global
+    /// "Skin-tint suppression" setting, so an author's 0 always wins. Only affects diffuse overlays.
+    /// </summary>
+    [JsonPropertyName("SkinToneMask")]
+    public float? SkinToneMask { get; set; }
 }
 
 /// <summary>Maps one Penumbra option group to per-option overlay sets.</summary>

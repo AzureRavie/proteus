@@ -532,9 +532,11 @@ public class CompositorService : IDisposable
                     // Fade the influence out by diffuse coverage so opaque fabric renders at its
                     // authored colour while sheer gaps keep skin tone. Diffuse overlays only —
                     // normal-only overlays add relief, not colour, so they keep skin tinting.
-                    // Strength is user-tunable (config.SkinColorSuppression); 0 disables it entirely
-                    // (and avoids rewriting the normal for diffuse-only overlays).
-                    if (desc.Diffuse != null && texPaths.Normal != null && config.SkinColorSuppression > 0f)
+                    // Strength = the user's global setting × this overlay's optional SkinToneMask
+                    // (author override; null = full). 0 disables it entirely (no skin masking, and
+                    // no normal rewrite for diffuse-only overlays).
+                    float skinMask = config.SkinColorSuppression * (desc.SkinToneMask ?? 1f);
+                    if (desc.Diffuse != null && texPaths.Normal != null && skinMask > 0f)
                     {
                         if (baseN == null)
                         {
@@ -553,7 +555,7 @@ public class CompositorService : IDisposable
                                 byte[]? diffAtN = baseD is { Length: > 0 }
                                     ? (wD == wN && hD == hN ? baseD : textureLoader.ScaleRgba(baseD, wD, hD, wN, hN))
                                     : null;
-                                SuppressSkinColorInfluence(baseN, scMask, diffAtN, wN, hN, config.SkinColorSuppression);
+                                SuppressSkinColorInfluence(baseN, scMask, diffAtN, wN, hN, skinMask);
                             }
                         }
                     }

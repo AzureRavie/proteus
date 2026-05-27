@@ -64,6 +64,7 @@ YourMod/
 | `Mask` | No | Path to your mask/specular overlay PNG. |
 | `Index` | No | Path to your index texture PNG. Enables per-region coloring. See below. |
 | `GenerateDiffuse` | No | Only affects **normal-only** overlays (a `Normal` with no `Diffuse`). Defaults to `true`. Set `false` to apply the normal (and any mask) **without** synthesizing a diffuse tint on the skin. Ignored when a `Diffuse` is present. See [Normal-only overlays](#normal-only-overlays). |
+| `SkinToneMask` | No | `0`–`1`. How strongly to keep the character's skin tone out of this overlay (so an opaque overlay looks the same on any skin tone). Omitted = full masking (the default). Set `0` to let skin tone show through fully — use for tattoos/decals that should take the skin's color. See [Skin-tone masking](#skin-tone-masking). |
 
 All paths are relative to the `Proteus/` folder. Subfolders and spaces in names are fine.
 
@@ -111,6 +112,22 @@ Some normal-only overlays should change **only** the normal (and mask) and leave
 With the flag off, Proteus applies your normal and mask over the base textures and does **not** lighten or recolor the skin diffuse. The flag defaults to `true` (existing mods are unaffected) and is ignored when a `Diffuse` is present — in that case your diffuse is composited directly.
 
 > A `Mask`-only overlay (no `Diffuse` **and** no `Normal`) is also supported: the mask PNG's own alpha defines where it applies. Useful for effects carried entirely in the mask/multi map, like wetness specular.
+
+### Skin-tone masking
+
+The skin shader (`skin.shpk`, used by Bibo+ bodies) multiplies the diffuse by the character's **skin tone**. Because Proteus composites your overlay into that diffuse, an opaque overlay would otherwise be darkened/tinted by skin tone — most visible as a bright/white overlay turning beige on darker skin. Proteus masks the skin tone out of opaque overlay pixels so they render at their authored color on any skin tone. The masking is automatically scaled by pixel brightness (bright pixels are fully de-tinted; dark pixels are left alone, since skin tone is invisible on dark color and masking it would slightly increase shine).
+
+Most overlays want this and need no setting. Use `SkinToneMask` when an overlay should instead **take the skin's color** — a tattoo, freckles, blush, a decal, or anything that sits *on* the skin rather than covering it:
+
+```json
+{
+  "MaterialGamePath": "chara/human/c0201/obj/body/b0001/material/v0001/mt_c0201b0001_bibo.mtrl",
+  "Diffuse": "Tattoo/diffuse.png",
+  "SkinToneMask": 0
+}
+```
+
+`0` lets skin tone through fully; `1` (or omitting it) is full masking; values between blend. Users also have a global "Skin-tint suppression" slider in `/proteus` that scales this — your `SkinToneMask: 0` always wins (the skin tone is never masked for that overlay).
 
 ### Index Textures
 
