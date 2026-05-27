@@ -63,6 +63,7 @@ YourMod/
 | `Normal` | No | Path to your normal map overlay PNG. Alpha-composited onto the base normal. |
 | `Mask` | No | Path to your mask/specular overlay PNG. |
 | `Index` | No | Path to your index texture PNG. Enables per-region coloring. See below. |
+| `GenerateDiffuse` | No | Only affects **normal-only** overlays (a `Normal` with no `Diffuse`). Defaults to `true`. Set `false` to apply the normal (and any mask) **without** synthesizing a diffuse tint on the skin. Ignored when a `Diffuse` is present. See [Normal-only overlays](#normal-only-overlays). |
 
 All paths are relative to the `Proteus/` folder. Subfolders and spaces in names are fine.
 
@@ -87,12 +88,29 @@ Users can override these values at any time from the Proteus status window. Thei
 
 #### Normal-only overlays
 
-If you provide a `Normal` but no `Diffuse`, Proteus automatically generates a white diffuse using the normal's **blue channel** as opacity. This means:
+If you provide a `Normal` but no `Diffuse`, Proteus by default **generates a diffuse tint** using the normal's **blue channel** as opacity and Row 16's color. This means:
 - The normal detail is applied only where the blue channel has value.
-- A matching white tint is applied to the skin diffuse in those same pixels.
+- A matching tint (Row 16's diffuse color — white by default) is applied to the skin diffuse in those same pixels.
 - No extra files needed — just ship the normal PNG.
 
-This is ideal for lace, fabric texture detail, or lingerie overlays where you want normal map detail to follow the shape of the garment without a separate diffuse mask.
+This is ideal for lace, fabric texture detail, or lingerie overlays where you want normal map detail to follow the shape of the garment and color the skin to match.
+
+##### Disabling the auto-diffuse — `"GenerateDiffuse": false`
+
+Some normal-only overlays should change **only** the normal (and mask) and leave the skin's diffuse color untouched — for example a wetness effect (normal + mask) or pure surface relief. Set `"GenerateDiffuse": false` on the overlay to skip the generated diffuse:
+
+```json
+{
+  "MaterialGamePath": "chara/human/c0201/obj/body/b0001/material/v0001/mt_c0201b0001_bibo.mtrl",
+  "Normal": "Wet/normal.png",
+  "Mask":   "Wet/mask.png",
+  "GenerateDiffuse": false
+}
+```
+
+With the flag off, Proteus applies your normal and mask over the base textures and does **not** lighten or recolor the skin diffuse. The flag defaults to `true` (existing mods are unaffected) and is ignored when a `Diffuse` is present — in that case your diffuse is composited directly.
+
+> A `Mask`-only overlay (no `Diffuse` **and** no `Normal`) is also supported: the mask PNG's own alpha defines where it applies. Useful for effects carried entirely in the mask/multi map, like wetness specular.
 
 ### Index Textures
 
