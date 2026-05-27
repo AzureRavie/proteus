@@ -79,6 +79,24 @@ public class StatusWindow : Window
             ImGui.TextColored(new System.Numerics.Vector4(1, 0.4f, 0.4f, 1), "Penumbra unavailable");
         }
 
+        // Skin-tint suppression strength (global multiplier). The per-pixel amount is weighted by
+        // overlay color: bright dyes get de-tinted, dark dyes are left skin-tinted and matte.
+        ImGui.SetNextItemWidth(140);
+        float skinSup = config.SkinColorSuppression;
+        if (ImGui.SliderFloat("Skin-tint suppression", ref skinSup, 0f, 1f, "%.2f"))
+            config.SkinColorSuppression = Math.Clamp(skinSup, 0f, 1f);
+        if (ImGui.IsItemDeactivatedAfterEdit())
+        {
+            config.Save();
+            compositor.TriggerRecomposite("skin-suppression");
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "How strongly overlays resist skin-tone tinting (global multiplier).\n" +
+                "Applied per pixel by color: white/bright dyes keep their authored color on any\n" +
+                "skin tone (slightly shinier), dark dyes stay skin-tinted and matte automatically.\n" +
+                "0.00 disables it entirely (original look).");
+
         ImGui.Separator();
 
         // ── Overlay mod list ─────────────────────────────────────────────────

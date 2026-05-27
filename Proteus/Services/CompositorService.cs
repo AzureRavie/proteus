@@ -532,7 +532,9 @@ public class CompositorService : IDisposable
                     // Fade the influence out by diffuse coverage so opaque fabric renders at its
                     // authored colour while sheer gaps keep skin tone. Diffuse overlays only —
                     // normal-only overlays add relief, not colour, so they keep skin tinting.
-                    if (desc.Diffuse != null && texPaths.Normal != null)
+                    // Strength is user-tunable (config.SkinColorSuppression); 0 disables it entirely
+                    // (and avoids rewriting the normal for diffuse-only overlays).
+                    if (desc.Diffuse != null && texPaths.Normal != null && config.SkinColorSuppression > 0f)
                     {
                         if (baseN == null)
                         {
@@ -543,7 +545,16 @@ public class CompositorService : IDisposable
                         if (baseN.Length > 0)
                         {
                             var scMask = CovAt(wN, hN);
-                            if (scMask != null) SuppressSkinColorInfluence(baseN, scMask, wN, hN);
+                            if (scMask != null)
+                            {
+                                // Weight the suppression by the composited overlay colour so dark
+                                // dyes keep skin tone (and stay matte) while bright dyes get fully
+                                // de-tinted. baseD holds that colour; scale it to the normal's size.
+                                byte[]? diffAtN = baseD is { Length: > 0 }
+                                    ? (wD == wN && hD == hN ? baseD : textureLoader.ScaleRgba(baseD, wD, hD, wN, hN))
+                                    : null;
+                                SuppressSkinColorInfluence(baseN, scMask, diffAtN, wN, hN, config.SkinColorSuppression);
+                            }
                         }
                     }
 
@@ -925,18 +936,27 @@ public class CompositorService : IDisposable
         }
     }
 
-    // Fade the normal map's BLUE channel (skin.shpk "skin color influence") toward black in
-    // proportion to overlay coverage. White blue → the shader multiplies the diffuse by the
-    // character's skin tone; black → the authored diffuse colour renders untinted. cov.alpha is
-    // the diffuse overlay's opacity: opaque pixels lose skin tint entirely (so an opaque overlay
-    // looks the same on any skin tone), sheer pixels keep it (bare skin still shows through gaps).
-    internal static void SuppressSkinColorInfluence(byte[] baseN, byte[] cov, int w, int h)
+    // Fade the normal map's BLUE channel (skin.shpk "skin color influence") toward black under the
+    // overlay so the shader stops re-tinting opaque overlay pixels by skin tone. The amount is
+    // weighted by the composited overlay colour's luminance: bright pixels (where skin tint is most
+    // visible — white-over-dark-skin reads beige) get full suppression, dark pixels get little or
+    // none (skin tint is invisible on dark colour anyway, and leaving the channel intact avoids the
+    // specular/subsurface shift that reads as extra shine). cov.alpha is the overlay opacity (sheer
+    // gaps keep skin tone); `diffuse` is the composited diffuse at the normal's resolution, null →
+    // luminance treated as 1 (coverage-only). `strength` is the global user multiplier.
+    internal static void SuppressSkinColorInfluence(byte[] baseN, byte[] cov, byte[]? diffuse, int w, int h, float strength = 1f)
     {
         int len = w * h * 4;
         for (int i = 0; i < len; i += 4)
         {
-            float a = cov[i + 3] / 255f;
+            float a = cov[i + 3] / 255f * strength;
             if (a <= 0f) continue;
+            if (diffuse != null)
+            {
+                float lum = (0.299f * diffuse[i] + 0.587f * diffuse[i + 1] + 0.114f * diffuse[i + 2]) / 255f;
+                a *= lum;
+                if (a <= 0f) continue;
+            }
             baseN[i + 2] = (byte)(baseN[i + 2] * (1f - a));
         }
     }
