@@ -447,6 +447,34 @@ public class CompositorService : IDisposable
                         }
                     }
 
+                    // ── Step 3: mask-only overlay — coverage from the mask's own alpha ──
+                    // No diffuse or normal to define the silhouette, so the mask overlay PNG's own
+                    // alpha is the coverage. Without this, a mask-only overlay (e.g. a wetness multi
+                    // map) has no covSrc and is skipped entirely below.
+                    if (covSrc == null && desc.Mask != null && texPaths.Mask != null)
+                    {
+                        if (baseM == null)
+                        {
+                            var loaded = textureLoader.LoadBaseTexture(penumbra.ResolvePlayer(texPaths.Mask), texPaths.Mask);
+                            if (loaded.HasValue) { baseM = loaded.Value.rgba; wM = loaded.Value.width; hM = loaded.Value.height; }
+                            baseM ??= Array.Empty<byte>();
+                        }
+                        if (baseM.Length > 0)
+                        {
+                            var maskOv = LoadPng(Path.Combine(entry.SidecarRoot, desc.Mask), wM, hM);
+                            if (maskOv != null)
+                            {
+                                if (desc.Index == null && row16A.Opacity != 0)
+                                    maskOv = ScaleOverlayAlpha(maskOv, row16A.Opacity);
+                                covSrc = maskOv; covW = wM; covH = hM;
+                            }
+                        }
+                    }
+                    else if (covSrc == null && desc.Mask != null && texPaths.Mask == null)
+                    {
+                        log.Warning("[Proteus] Mask-only overlay but material has no mask texture: {0}", mtrlGamePath);
+                    }
+
                     if (covSrc == null) continue; // no coverage — nothing to composite
 
                     // Returns the coverage mask resized to (tw × th) on demand.
