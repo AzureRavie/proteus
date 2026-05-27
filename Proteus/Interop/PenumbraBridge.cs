@@ -23,6 +23,8 @@ public class PenumbraBridge : IDisposable
     private readonly ReloadMod reloadMod;
     private readonly TrySetMod trySetMod;
     private readonly TrySetModPriority trySetModPriority;
+    private readonly TrySetModSetting trySetModSetting;
+    private readonly TrySetModSettings trySetModSettings;
     private readonly RedrawObject redrawObject;
     private readonly OpenMainWindow openMainWindow;
 
@@ -62,6 +64,8 @@ public class PenumbraBridge : IDisposable
         reloadMod = new ReloadMod(pluginInterface);
         trySetMod = new TrySetMod(pluginInterface);
         trySetModPriority = new TrySetModPriority(pluginInterface);
+        trySetModSetting = new TrySetModSetting(pluginInterface);
+        trySetModSettings = new TrySetModSettings(pluginInterface);
         redrawObject = new RedrawObject(pluginInterface);
         openMainWindow = new OpenMainWindow(pluginInterface);
 
@@ -213,6 +217,22 @@ public class PenumbraBridge : IDisposable
         if (!IsAvailable) return PenumbraApiEc.SystemDisposed;
         try { return trySetModPriority.Invoke(collectionId, modDirectory, priority); }
         catch (Exception ex) { log.Error(ex, "TrySetModPriority failed"); return PenumbraApiEc.UnknownError; }
+    }
+
+    /// <summary>
+    /// Set the selected option(s) for one of a mod's option groups in a collection.
+    /// An empty list clears the selection. Uses the single-option API for exactly one selection.
+    /// </summary>
+    public PenumbraApiEc SetModOption(Guid collectionId, string modDirectory, string groupName, IReadOnlyList<string> options)
+    {
+        if (!IsAvailable) return PenumbraApiEc.SystemDisposed;
+        try
+        {
+            return options.Count == 1
+                ? trySetModSetting.Invoke(collectionId, modDirectory, groupName, options[0])
+                : trySetModSettings.Invoke(collectionId, modDirectory, groupName, options);
+        }
+        catch (Exception ex) { log.Error(ex, "TrySetModSetting(s) failed for {0}/{1}", modDirectory, groupName); return PenumbraApiEc.UnknownError; }
     }
 
     public void RedrawPlayer()

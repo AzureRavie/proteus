@@ -37,6 +37,11 @@ public class CompositorService : IDisposable
     private readonly object triggerLock = new();
     private long _lastOwnRedrawTick = 0; // TickCount64 when we last called RedrawPlayer()
 
+    // Non-persistent per-mod color override pushed by the design-binding system. When set, the
+    // compositor uses these colors in place of each mod's metadata.json colors for the run; null
+    // means "use metadata as authored". Reference assignment is atomic; read on the recomposite task.
+    private volatile IReadOnlyDictionary<string, OverlayColorOverride>? _colorOverride;
+
     public CompositorResult? LastResult { get; private set; }
     public List<OverlayEntry> LastDiscovered { get; private set; } = [];
     public event Action? ResultChanged;
@@ -190,6 +195,16 @@ public class CompositorService : IDisposable
         return File.Exists(metaPath);
     }
 
+    // ── Color override (design bindings) ───────────────────────────────────────
+
+    /// <summary>
+    /// Push a non-persistent per-mod color override (from a restored design binding) to be used at
+    /// composite time in place of metadata.json colors. Pass null to clear. Does not itself trigger
+    /// a recomposite — the caller decides when to recomposite.
+    /// </summary>
+    public void SetActiveColorOverride(IReadOnlyDictionary<string, OverlayColorOverride>? overrideByMod)
+        => _colorOverride = overrideByMod;
+
     // ── Trigger ──────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -269,9 +284,20 @@ public class CompositorService : IDisposable
             var byMaterial = new Dictionary<string, List<(OverlayEntry Entry, ResolvedOverlay Overlay)>>(
                 StringComparer.OrdinalIgnoreCase);
 
+            var colorOverride = _colorOverride; // snapshot the volatile reference for this run
+
             foreach (var entry in entries)
             {
                 var overlays = discovery.ResolveActiveOverlays(entry);
+
+                // A restored design binding overrides metadata colors in-memory (metadata.json is
+                // never written). Replace each overlay's rows with the binding's, falling back to
+                // the live metadata colors when the binding has none for that overlay.
+                if (colorOverride != null && colorOverride.TryGetValue(entry.ModDirectory, out var ovr))
+                    overlays = overlays
+                        .Select(o => o with { ColorTableRows = ovr.Resolve(o.OptionGroup, o.Option) ?? o.ColorTableRows })
+                        .ToList();
+
                 foreach (var overlay in overlays)
                 {
                     foreach (var mtrlPath in overlay.Descriptor.MaterialGamePaths)

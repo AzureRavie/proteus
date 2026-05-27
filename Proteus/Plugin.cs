@@ -26,6 +26,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly TextureLoader textureLoader;
     private readonly SidecarDiscoveryService discovery;
     private readonly CompositorService compositor;
+    private readonly DesignBindingService designBindings;
+    private readonly GlamourerDesignWatcher designWatcher;
     private readonly WindowSystem windowSystem;
     private readonly StatusWindow statusWindow;
     private readonly IpcProvider ipcProvider;
@@ -44,9 +46,11 @@ public sealed class Plugin : IDalamudPlugin
         textureLoader = new TextureLoader(DataManager, log);
         discovery = new SidecarDiscoveryService(penumbra, log);
         compositor = new CompositorService(penumbra, glamourer, discovery, textureLoader, config, log);
+        designBindings = new DesignBindingService(penumbra, glamourer, discovery, compositor, config, pluginInterface, framework, log);
+        designWatcher = new GlamourerDesignWatcher(designBindings, config.GlamourerDesignDirOverride ?? glamourer.DesignsDirectory, log);
         ipcProvider = new IpcProvider(pluginInterface, compositor, discovery, log);
 
-        statusWindow = new StatusWindow(compositor, discovery, penumbra, config);
+        statusWindow = new StatusWindow(compositor, discovery, penumbra, config, designBindings);
 
         windowSystem = new WindowSystem("Proteus");
         windowSystem.AddWindow(statusWindow);
@@ -85,6 +89,8 @@ public sealed class Plugin : IDalamudPlugin
 
         windowSystem.RemoveAllWindows();
         ipcProvider.Dispose();
+        designWatcher.Dispose();
+        designBindings.Dispose();
         compositor.Dispose();
         glamourer.Dispose();
         penumbra.Dispose();

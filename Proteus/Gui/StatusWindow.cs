@@ -18,6 +18,7 @@ public class StatusWindow : Window
     private readonly SidecarDiscoveryService discovery;
     private readonly PenumbraBridge penumbra;
     private readonly Configuration config;
+    private readonly DesignBindingService designBindings;
 
     // Key: absolute index-texture path → 1-based row numbers that appear in it.
     // Cleared per-entry on each popup open so option switches are reflected.
@@ -31,13 +32,15 @@ public class StatusWindow : Window
         CompositorService compositor,
         SidecarDiscoveryService discovery,
         PenumbraBridge penumbra,
-        Configuration config)
+        Configuration config,
+        DesignBindingService designBindings)
         : base("Proteus###ProteusStatus", ImGuiWindowFlags.AlwaysAutoResize)
     {
-        this.compositor = compositor;
-        this.discovery  = discovery;
-        this.penumbra   = penumbra;
-        this.config     = config;
+        this.compositor     = compositor;
+        this.discovery      = discovery;
+        this.penumbra       = penumbra;
+        this.config         = config;
+        this.designBindings = designBindings;
 
         SizeConstraints = new WindowSizeConstraints
         {
@@ -159,6 +162,11 @@ public class StatusWindow : Window
 
         ImGui.Separator();
 
+        // ── Design bindings ──────────────────────────────────────────────────
+        DrawDesignBindings();
+
+        ImGui.Separator();
+
         // ── Last result ───────────────────────────────────────────────────────
         var result = compositor.LastResult;
         if (result == null)
@@ -181,6 +189,69 @@ public class StatusWindow : Window
                                $"{result.TexturesPatched} texture{(result.TexturesPatched != 1 ? "s" : "")} patched   " +
                                $"{result.OverlayModsUsed} mod{(result.OverlayModsUsed != 1 ? "s" : "")}");
         }
+    }
+
+    private void DrawDesignBindings()
+    {
+        if (!ImGui.CollapsingHeader("Design bindings"))
+            return;
+
+        bool bindEnabled = config.DesignBindingEnabled;
+        if (ImGui.Checkbox("Bind Proteus state to Glamourer designs", ref bindEnabled))
+        {
+            config.DesignBindingEnabled = bindEnabled;
+            config.Save();
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("When on, saving a Glamourer design snapshots the current Proteus state.\n" +
+                             "Applying that design later restores it (best-effort gear match).");
+
+        var bindings = designBindings.Bindings;
+        var activeId = designBindings.ActiveDesignId;
+
+        if (activeId.HasValue)
+        {
+            var act = bindings.FirstOrDefault(b => b.DesignId == activeId.Value);
+            ImGui.TextDisabled($"Active: {act?.DesignName ?? activeId.Value.ToString()[..8]}");
+        }
+
+        if (bindings.Count == 0)
+        {
+            ImGui.TextDisabled("No bound designs yet.");
+            return;
+        }
+
+        ImGui.BeginTable("##bindings", 3, ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.BordersInnerV);
+        ImGui.TableSetupColumn("Design",   ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn("Captured", ImGuiTableColumnFlags.WidthFixed, 90);
+        ImGui.TableSetupColumn("##rm",     ImGuiTableColumnFlags.WidthFixed, 60);
+        ImGui.TableHeadersRow();
+
+        Guid? toRemove = null;
+        foreach (var b in bindings)
+        {
+            ImGui.TableNextRow();
+
+            ImGui.TableNextColumn();
+            var label = b.DesignName ?? b.DesignId.ToString()[..8];
+            if (activeId == b.DesignId) label = "● " + label; // ● marks the active binding
+            ImGui.TextUnformatted(label);
+
+            ImGui.TableNextColumn();
+            var ago = DateTime.UtcNow - b.CapturedUtc;
+            ImGui.TextDisabled(
+                ago.TotalSeconds < 60 ? $"{ago.TotalSeconds:F0}s ago"
+                : ago.TotalMinutes < 60 ? $"{ago.TotalMinutes:F0}m ago"
+                : $"{ago.TotalHours:F0}h ago");
+
+            ImGui.TableNextColumn();
+            if (ImGui.SmallButton($"Unbind##{b.DesignId}"))
+                toRemove = b.DesignId;
+        }
+        ImGui.EndTable();
+
+        if (toRemove.HasValue)
+            designBindings.RemoveBinding(toRemove.Value);
     }
 
     private void DrawColorEditor(OverlayEntry entry)

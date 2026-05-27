@@ -157,6 +157,33 @@ public class ColorTableRowOverride
 }
 
 /// <summary>
+/// Non-persistent per-mod color override pushed by the design-binding system into the compositor.
+/// Mirrors the metadata color structure (a top-level row list plus per-group/per-option lists), but
+/// is applied only at composite time — metadata.json is never modified. Stored in design_bindings.json.
+/// </summary>
+public class OverlayColorOverride
+{
+    [JsonPropertyName("Top")]
+    public List<ColorTableRowPreset>? Top { get; set; }
+
+    /// <summary>group → option → rows.</summary>
+    [JsonPropertyName("Options")]
+    public Dictionary<string, Dictionary<string, List<ColorTableRowPreset>>>? Options { get; set; }
+
+    /// <summary>
+    /// Resolve the rows for an overlay: the matching option's rows if present, else the top-level rows.
+    /// Returns null when nothing is stored, so callers can fall back to the live metadata colors.
+    /// </summary>
+    public List<ColorTableRowPreset>? Resolve(string? group, string? option)
+    {
+        if (group != null && option != null && Options != null
+            && Options.TryGetValue(group, out var opts) && opts.TryGetValue(option, out var rows))
+            return rows;
+        return Top;
+    }
+}
+
+/// <summary>
 /// Deserialises MaterialGamePath as either a JSON string or a JSON array of strings.
 /// Serialises a single-element list back as a plain string for compact output.
 /// </summary>
