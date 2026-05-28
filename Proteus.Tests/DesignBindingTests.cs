@@ -170,4 +170,37 @@ public class DesignBindingTests
         Assert.Null(ovr.Resolve(null, null));
         Assert.Null(ovr.Resolve("g", "o"));
     }
+
+    // ── PickMostRecent ─────────────────────────────────────────────────────────
+
+    [Fact]
+    public void PickMostRecent_ReturnsBindingWithLatestCapturedUtc()
+    {
+        var older  = Guid.NewGuid();
+        var newer  = Guid.NewGuid();
+        var newest = Guid.NewGuid();
+        var bindings = new Dictionary<Guid, DesignBinding>
+        {
+            [older]  = new() { DesignId = older,  CapturedUtc = new(2026, 5, 27, 12, 0, 0, DateTimeKind.Utc) },
+            [newer]  = new() { DesignId = newer,  CapturedUtc = new(2026, 5, 28, 12, 0, 0, DateTimeKind.Utc) },
+            [newest] = new() { DesignId = newest, CapturedUtc = new(2026, 5, 28, 19, 51, 0, DateTimeKind.Utc) },
+        };
+        Assert.Equal(newest, DesignBindingService.PickMostRecent(new[] { older, newer, newest }, bindings));
+        Assert.Equal(newer,  DesignBindingService.PickMostRecent(new[] { older, newer },         bindings));
+        Assert.Equal(older,  DesignBindingService.PickMostRecent(new[] { older },                bindings));
+    }
+
+    [Fact]
+    public void PickMostRecent_MissingBindingTreatedAsOldest()
+    {
+        // An ID present in `matches` but missing from the store can occur transiently if a binding
+        // is removed between match-collection and pick. Such IDs must not be preferred.
+        var present = Guid.NewGuid();
+        var missing = Guid.NewGuid();
+        var bindings = new Dictionary<Guid, DesignBinding>
+        {
+            [present] = new() { DesignId = present, CapturedUtc = new(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc) },
+        };
+        Assert.Equal(present, DesignBindingService.PickMostRecent(new[] { missing, present }, bindings));
+    }
 }

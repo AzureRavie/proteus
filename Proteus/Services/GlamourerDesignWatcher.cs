@@ -9,9 +9,10 @@ namespace Proteus.Services;
 
 /// <summary>
 /// Watches Glamourer's designs directory and notifies <see cref="DesignBindingService"/> when a
-/// design is saved. Purely passive: it never opens design file contents (the GUID comes from the
-/// filename) and never writes to the directory, so it cannot lock or corrupt Glamourer's files.
-/// Per-GUID debounced because Glamourer autosaves on every edit.
+/// design is saved or deleted. Purely passive: it never opens design file contents (the GUID
+/// comes from the filename) and never writes to the directory, so it cannot lock or corrupt
+/// Glamourer's files. Per-GUID debounced because Glamourer autosaves on every edit; save and
+/// delete share the debounce so an atomic save (briefly deletes-then-recreates) lands as a save.
 /// </summary>
 public sealed class GlamourerDesignWatcher : IDisposable
 {
@@ -43,6 +44,7 @@ public sealed class GlamourerDesignWatcher : IDisposable
             };
             watcher.Created += OnChanged;
             watcher.Changed += OnChanged;
+            watcher.Deleted += OnChanged;
             watcher.Renamed += OnRenamed;
             watcher.Error   += OnError;
             watcher.EnableRaisingEvents = true;
@@ -73,7 +75,13 @@ public sealed class GlamourerDesignWatcher : IDisposable
             try { await Task.Delay(DebounceMs, token); }
             catch (OperationCanceledException) { return; }
             debounce.TryRemove(id, out _);
-            bindingService.OnDesignSaved(id); // marshals to the framework thread internally
+            // Decide save vs delete by the final state: if the file is present after the
+            // debounce window, treat as save (covers Glamourer's atomic "delete + recreate"
+            // save flow); if it's gone, the design was actually deleted.
+            if (File.Exists(fullPath))
+                bindingService.OnDesignSaved(id); // marshals to the framework thread internally
+            else
+                bindingService.OnDesignDeleted(id);
         }, token);
     }
 
@@ -84,6 +92,7 @@ public sealed class GlamourerDesignWatcher : IDisposable
             watcher.EnableRaisingEvents = false;
             watcher.Created -= OnChanged;
             watcher.Changed -= OnChanged;
+            watcher.Deleted -= OnChanged;
             watcher.Renamed -= OnRenamed;
             watcher.Error   -= OnError;
             watcher.Dispose();

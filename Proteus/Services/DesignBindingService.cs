@@ -113,14 +113,20 @@ public class DesignBindingService : IDisposable
 
     public void RemoveBinding(Guid id)
     {
+        bool wasActive;
         lock (gate)
         {
             if (!store.Bindings.Remove(id)) return;
             designCache.Remove(id);
-            if (activeDesignId == id) { activeDesignId = null; activeOverride = null; }
+            wasActive = activeDesignId == id;
+            if (wasActive) { activeDesignId = null; activeOverride = null; }
             Save();
         }
-        compositor.SetActiveColorOverride(null);
+        if (wasActive)
+        {
+            compositor.SetActiveColorOverride(null);
+            compositor.TriggerRecomposite($"design-binding-remove:{id}");
+        }
     }
 
     // ── Capture (called by the design-file watcher; any thread) ─────────────────
@@ -130,6 +136,27 @@ public class DesignBindingService : IDisposable
     {
         if (!config.DesignBindingEnabled) return;
         framework.RunOnFrameworkThread(() => Capture(designId));
+    }
+
+    /// <summary>
+    /// Called when a design's {guid}.json is deleted. Drops the binding (which also clears the
+    /// cached design JObject and, if the deleted design's override is active, the live override).
+    /// Runs even when DesignBindingEnabled is off, because stale bindings for vanished designs
+    /// are never useful and would pollute future ambiguous-match resolution.
+    /// </summary>
+    public void OnDesignDeleted(Guid designId)
+    {
+        framework.RunOnFrameworkThread(() =>
+        {
+            string? name;
+            lock (gate)
+            {
+                if (!store.Bindings.TryGetValue(designId, out var b)) return;
+                name = b.DesignName;
+            }
+            RemoveBinding(designId);
+            log.Information("[Proteus] Removed binding for deleted Glamourer design {0}.", name ?? designId.ToString());
+        });
     }
 
     private void Capture(Guid designId)
@@ -289,18 +316,28 @@ public class DesignBindingService : IDisposable
                 matches.Add(id);
         }
 
-        if (matches.Count == 1)
-        {
-            if (activeDesignId == matches[0]) return; // already applied
-            Restore(matches[0]);
-        }
-        else if (matches.Count == 0)
+        if (matches.Count == 0)
         {
             // An unbound/unrecognized design was applied → revert to base colors.
             if (activeDesignId != null) ClearColorOverride();
+            return;
         }
-        // matches.Count >= 2 → ambiguous → abstain (leave current override in place)
+
+        // For ambiguous matches (variations of the same outfit share a gear set), prefer the
+        // most recently captured binding — that's the design most likely to be the one just
+        // saved/applied, and avoids stale older overrides sticking around.
+        Guid pick;
+        if (matches.Count == 1)
+            pick = matches[0];
+        else
+            lock (gate) pick = PickMostRecent(matches, store.Bindings);
+
+        if (activeDesignId == pick) return; // already applied
+        Restore(pick);
     }
+
+    internal static Guid PickMostRecent(IReadOnlyList<Guid> ids, IReadOnlyDictionary<Guid, DesignBinding> bindings)
+        => ids.OrderByDescending(id => bindings.TryGetValue(id, out var b) ? b.CapturedUtc : DateTime.MinValue).First();
 
     private JObject? GetDesignCached(Guid id)
     {
