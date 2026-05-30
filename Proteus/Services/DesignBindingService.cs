@@ -294,12 +294,70 @@ public class DesignBindingService : IDisposable
         compositor.TriggerRecomposite("design-override-clear");
     }
 
+    // ── Live override editing (UI, framework thread) ────────────────────────────
+
+    /// <summary>True when a binding is active and supplies colors for this mod.</summary>
+    public bool IsOverrideActiveFor(string modDir)
+    {
+        lock (gate) return activeOverride != null && activeOverride.ContainsKey(modDir);
+    }
+
+    /// <summary>
+    /// The mutable rows list the editor should bind to when an override is active for this mod,
+    /// or null if none. group/option=null targets the top-level rows; otherwise the option's rows.
+    /// Seeds (clones) from seedRows (the mod's metadata rows for the same scope) when the override
+    /// has nothing stored yet, so editing starts from what was on screen.
+    /// </summary>
+    public List<ColorTableRowPreset>? GetEditableOverrideRows(
+        string modDir, string? group, string? option, List<ColorTableRowPreset>? seedRows)
+    {
+        lock (gate)
+        {
+            if (activeOverride == null || !activeOverride.TryGetValue(modDir, out var ovr))
+                return null;
+            if (group != null && option != null)
+            {
+                ovr.Options ??= new();
+                if (!ovr.Options.TryGetValue(group, out var inner))
+                    ovr.Options[group] = inner = new();
+                if (!inner.TryGetValue(option, out var rows))
+                    inner[option] = rows = CloneRows(seedRows) ?? new();
+                return rows;
+            }
+            return ovr.Top ??= CloneRows(seedRows) ?? new();
+        }
+    }
+
+    /// <summary>
+    /// Persist + re-push the live override after the editor mutated a list from
+    /// GetEditableOverrideRows. No-op if no binding active. Caller triggers the recomposite.
+    /// </summary>
+    public void CommitActiveOverrideEdit()
+    {
+        Dictionary<string, OverlayColorOverride>? snapshot;
+        lock (gate)
+        {
+            if (activeDesignId == null || activeOverride == null) return;
+            snapshot = activeOverride;
+            Save();
+        }
+        compositor.SetActiveColorOverride(snapshot);
+    }
+
     // ── Heuristic apply detection (framework thread) ────────────────────────────
 
     private void OnGlamourerStateChangedTyped(StateChangeType type)
     {
         if (type != StateChangeType.Design) return;
         if (Environment.TickCount64 < suppressUntilTick) return; // our own restore echo
+
+        // Feature disabled → never restore. Also drop any override left active from before the
+        // toggle was turned off, so "off" means colors fall back to metadata (off == fully off).
+        if (!config.DesignBindingEnabled)
+        {
+            if (activeDesignId != null) ClearColorOverride();
+            return;
+        }
 
         Guid[] candidateIds;
         lock (gate) candidateIds = store.Bindings.Keys.ToArray();

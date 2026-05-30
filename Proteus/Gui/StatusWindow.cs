@@ -20,6 +20,9 @@ public class StatusWindow : Window
     private readonly Configuration config;
     private readonly DesignBindingService designBindings;
 
+    // Accent used to flag an active design binding (and the mods/colors it drives).
+    private static readonly Vector4 BindingAccent = new(0.45f, 0.75f, 1f, 1f);
+
     // Key: absolute index-texture path → 1-based row numbers that appear in it.
     // Cleared per-entry on each popup open so option switches are reflected.
     private readonly Dictionary<string, HashSet<int>> _indexRowCache = new();
@@ -156,11 +159,18 @@ public class StatusWindow : Window
                     compositor.TriggerRecomposite("penumbra-priority");
                 }
 
-                // Colors button + popup editor
+                // Colors button + popup editor. Tinted when a design binding is currently
+                // driving this mod's colors (edits target the binding, not metadata).
                 ImGui.TableNextColumn();
                 var popupId = $"##colors_{entry.ModDirectory}";
-                if (ImGui.Button($"Colors##{entry.ModDirectory}"))
-                    ImGui.OpenPopup(popupId);
+                bool bindingDriven = designBindings.IsOverrideActiveFor(entry.ModDirectory);
+                using (ImRaii.PushColor(ImGuiCol.Button, ImGui.GetColorU32(BindingAccent with { W = 0.45f }), bindingDriven))
+                {
+                    if (ImGui.Button($"Colors##{entry.ModDirectory}"))
+                        ImGui.OpenPopup(popupId);
+                }
+                if (bindingDriven && ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Colors are driven by the active design binding.\nEdits update the binding; base colors are unchanged.");
 
                 if (ImGui.BeginPopup(popupId))
                 {
@@ -219,6 +229,10 @@ public class StatusWindow : Window
         {
             config.DesignBindingEnabled = bindEnabled;
             config.Save();
+            // Turning the feature off drops any active override immediately so colors fall back
+            // to metadata, rather than lingering until the next design application.
+            if (!bindEnabled)
+                designBindings.ClearColorOverride();
         }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("When on, saving a Glamourer design snapshots the current Proteus state.\n" +
@@ -250,10 +264,20 @@ public class StatusWindow : Window
         {
             ImGui.TableNextRow();
 
+            bool isActive = activeId == b.DesignId;
+            if (isActive)
+                ImGui.TableSetBgColor(ImGuiTableBgTarget.RowBg0,
+                    ImGui.GetColorU32(BindingAccent with { W = 0.20f }));
+
             ImGui.TableNextColumn();
             var label = b.DesignName ?? b.DesignId.ToString()[..8];
-            if (activeId == b.DesignId) label = "● " + label; // ● marks the active binding
-            ImGui.TextUnformatted(label);
+            if (isActive)
+            {
+                label = "● " + label; // ● marks the active binding
+                ImGui.TextColored(BindingAccent, label);
+            }
+            else
+                ImGui.TextUnformatted(label);
 
             ImGui.TableNextColumn();
             var ago = DateTime.UtcNow - b.CapturedUtc;
@@ -275,6 +299,17 @@ public class StatusWindow : Window
     private void DrawColorEditor(OverlayEntry entry)
     {
         ImGui.TextUnformatted(entry.ModName);
+
+        // When a design binding drives this mod, edits target the binding (not metadata.json).
+        bool editingBinding = designBindings.IsOverrideActiveFor(entry.ModDirectory);
+        if (editingBinding)
+        {
+            var activeId = designBindings.ActiveDesignId;
+            var name = designBindings.Bindings.FirstOrDefault(b => b.DesignId == activeId)?.DesignName
+                       ?? activeId?.ToString()[..8] ?? "?";
+            ImGui.TextColored(BindingAccent, $"Editing binding '{name}' — base colors unchanged.");
+        }
+
         ImGui.Separator();
 
         // Clear per-entry index cache on popup open so option switches are reflected.
@@ -285,7 +320,12 @@ public class StatusWindow : Window
         // ── simple-mod path (top-level Overlays, no OptionGroups) ────────────
         if (entry.Metadata.OptionGroups is not { Count: > 0 })
         {
-            var rows = entry.Metadata.ColorTableRows ??= [];
+            var metaRows = entry.Metadata.ColorTableRows ??= [];
+            var ovrRows  = editingBinding
+                ? designBindings.GetEditableOverrideRows(entry.ModDirectory, null, null, metaRows)
+                : null;
+            var rows = ovrRows ?? metaRows;
+
             var usedRowsSimple = new HashSet<int>();
             bool hasIdxSimple  = false;
             foreach (var ov in entry.Metadata.Overlays ?? [])
@@ -302,7 +342,12 @@ public class StatusWindow : Window
                 ImGui.TextDisabled("No index texture — only Row 16 is applied.");
             bool changedSimple = false;
             DrawRowControls(entry.ModDirectory, rows, filteredSimple, ref changedSimple);
-            if (changedSimple) { discovery.SaveMetadata(entry); compositor.TriggerRecomposite("colors-change"); }
+            if (changedSimple)
+            {
+                if (ovrRows != null) designBindings.CommitActiveOverrideEdit();
+                else                 discovery.SaveMetadata(entry);
+                compositor.TriggerRecomposite("colors-change");
+            }
             return;
         }
 
@@ -361,9 +406,19 @@ public class StatusWindow : Window
             ImGui.TextDisabled("No index texture — only Row 16 is applied.");
 
         activeOpt.ColorTableRows ??= [];
+        var ovrOptRows = editingBinding
+            ? designBindings.GetEditableOverrideRows(entry.ModDirectory, groupName, activeOpt.Name, activeOpt.ColorTableRows)
+            : null;
+        var editRows = ovrOptRows ?? activeOpt.ColorTableRows;
+
         bool changed = false;
-        DrawRowControls($"{entry.ModDirectory}_{groupName}", activeOpt.ColorTableRows, usedRows, ref changed);
-        if (changed) { discovery.SaveMetadata(entry); compositor.TriggerRecomposite("colors-change"); }
+        DrawRowControls($"{entry.ModDirectory}_{groupName}", editRows, usedRows, ref changed);
+        if (changed)
+        {
+            if (ovrOptRows != null) designBindings.CommitActiveOverrideEdit();
+            else                    discovery.SaveMetadata(entry);
+            compositor.TriggerRecomposite("colors-change");
+        }
     }
 
     // Renders the per-row A/B color/emissive/opacity controls, filtered by usedRows when non-null.
