@@ -295,7 +295,17 @@ public class CompositorService : IDisposable
                 // the live metadata colors when the binding has none for that overlay.
                 if (colorOverride != null && colorOverride.TryGetValue(entry.ModDirectory, out var ovr))
                     overlays = overlays
-                        .Select(o => o with { ColorTableRows = ovr.Resolve(o.OptionGroup, o.Option) ?? o.ColorTableRows })
+                        .Select(o =>
+                        {
+                            var ovrRows = ovr.Resolve(o.OptionGroup, o.Option);
+                            // TEMP DIAGNOSTIC: trace whether the binding override actually reaches the
+                            // composite for each active overlay, what option it keyed on, and the colour.
+                            log.Debug("[Proteus] colorovr {0} opt={1}/{2} -> {3} (A={4})",
+                                entry.ModDirectory, o.OptionGroup ?? "-", o.Option ?? "-",
+                                ovrRows != null ? "OVERRIDE" : "metadata-fallback",
+                                (ovrRows ?? o.ColorTableRows)?.FirstOrDefault()?.SubRowA?.Diffuse ?? "none");
+                            return o with { ColorTableRows = ovrRows ?? o.ColorTableRows };
+                        })
                         .ToList();
 
                 foreach (var overlay in overlays)
@@ -325,21 +335,13 @@ public class CompositorService : IDisposable
             // Penumbra sees a genuinely different redirect path → forces a cache miss.
             var runId = Guid.NewGuid().ToString("N")[..8];
 
-            // Shared across all parallel tasks within this run. The same overlay PNG
-            // (e.g. diffuse.png at 4096×4096) is needed by every body-type material;
-            // per-material caches previously decoded it once per material (6× for stockings).
-            // Scoped to this Recomposite call so it doesn't accumulate across runs.
-            var runPngCache = new ConcurrentDictionary<(string path, int w, int h), Lazy<byte[]?>>();
-
             Parallel.ForEach(byMaterial, new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = 4 }, kvp =>
             {
                 var (mtrlGamePath, pairs) = kvp;
 
-                byte[]? LoadPng(string path, int w, int h) =>
-                    runPngCache.GetOrAdd(
-                        (path, w, h),
-                        static (key, loader) => new Lazy<byte[]?>(() => loader.LoadPngAsRgba(key.path, key.w, key.h)),
-                        textureLoader).Value;
+                // TextureLoader caches decoded PNGs across runs (keyed by path + mtime),
+                // and its Lazy wrapper dedups concurrent requests for the same file.
+                byte[]? LoadPng(string path, int w, int h) => textureLoader.LoadPngAsRgba(path, w, h);
 
                 if (ct.IsCancellationRequested) return;
 
@@ -694,7 +696,7 @@ public class CompositorService : IDisposable
             });
 
             WriteManagedModJson(redirects);
-            ReloadAndRedraw();
+            ReloadAndRedrawWhenReady(redirects, runId);
 
             LastResult = new CompositorResult
             {
@@ -798,6 +800,45 @@ public class CompositorService : IDisposable
             Interlocked.Exchange(ref _lastOwnRedrawTick, Environment.TickCount64);
             penumbra.RedrawPlayer();
         }
+    }
+
+    // Reload the managed mod, then redraw — but instead of sleeping a fixed, conservative
+    // interval before the redraw, poll until Penumbra has actually processed the new
+    // redirects. Penumbra applies a ReloadMod asynchronously on its framework handler; the
+    // redraw re-requests textures through ResolvePlayer, so redrawing before the reload lands
+    // loads stale files. Because the managed mod is highest priority, ResolvePlayer returns
+    // our own output, and this run's unique runId in the filename confirms the *new* output is
+    // live (not a prior run's). Typical readiness is well under the old 300 ms; the cap keeps a
+    // miss from hanging the redraw.
+    private void ReloadAndRedrawWhenReady(IDictionary<string, string> redirects, string runId)
+    {
+        var ec = penumbra.ReloadModDirectory(SidecarDiscoveryService.ManagedModDir);
+        log.Debug("[Proteus] ReloadMod -> {0}", ec);
+        if (config.DisableAutoRedraw) return;
+
+        // A game path we just redirected to a .tex output — used as the readiness probe.
+        var probe = redirects.FirstOrDefault(
+            kv => kv.Value.EndsWith(".tex", StringComparison.OrdinalIgnoreCase)).Key;
+
+        if (probe != null)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < 400)
+            {
+                var resolved = penumbra.ResolvePlayer(probe);
+                if (resolved != null && resolved.Contains(runId, StringComparison.OrdinalIgnoreCase))
+                    break;
+                Thread.Sleep(15);
+            }
+            log.Debug("[Proteus] reload ready after {0}ms", sw.ElapsedMilliseconds);
+        }
+        else
+        {
+            Thread.Sleep(300); // no texture probe (mtrl-only redirects) — fall back to fixed wait
+        }
+
+        Interlocked.Exchange(ref _lastOwnRedrawTick, Environment.TickCount64);
+        penumbra.RedrawPlayer();
     }
 
     // ── Compositing ──────────────────────────────────────────────────────────

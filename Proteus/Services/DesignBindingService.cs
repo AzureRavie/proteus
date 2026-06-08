@@ -344,6 +344,37 @@ public class DesignBindingService : IDisposable
         compositor.SetActiveColorOverride(snapshot);
     }
 
+    /// <summary>
+    /// Fold a manual enable/priority change (made in the Proteus UI) into the active binding so the
+    /// edit becomes the binding's new truth, instead of being reverted by the next restore. No-op if
+    /// no binding is active or the mod isn't part of it. Returns true if the binding was updated.
+    /// </summary>
+    public bool UpdateActiveBindingMod(string modDir, bool? enabled = null, int? priority = null)
+    {
+        lock (gate)
+        {
+            if (activeDesignId == null) return false;
+            if (!store.Bindings.TryGetValue(activeDesignId.Value, out var b)) return false;
+            if (!ApplyManualModEdit(b, modDir, enabled, priority)) return false;
+            Save();
+            return true;
+        }
+    }
+
+    // Apply an enable/priority edit to a binding's stored mod entry. Returns true iff something
+    // actually changed (so the caller can skip persisting). Pure — unit-tested without Dalamud.
+    internal static bool ApplyManualModEdit(DesignBinding b, string modDir, bool? enabled, int? priority)
+    {
+        var mod = b.Mods.FirstOrDefault(m =>
+            string.Equals(m.ModDirectory, modDir, StringComparison.OrdinalIgnoreCase));
+        if (mod == null) return false;
+
+        bool changed = false;
+        if (enabled.HasValue  && mod.Enabled  != enabled.Value)  { mod.Enabled  = enabled.Value;  changed = true; }
+        if (priority.HasValue && mod.Priority != priority.Value) { mod.Priority = priority.Value; changed = true; }
+        return changed;
+    }
+
     // ── Heuristic apply detection (framework thread) ────────────────────────────
 
     private void OnGlamourerStateChangedTyped(StateChangeType type)

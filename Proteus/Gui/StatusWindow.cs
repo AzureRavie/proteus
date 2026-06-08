@@ -132,6 +132,9 @@ public class StatusWindow : Window
                 if (ImGui.Checkbox($"##en_{entry.ModDirectory}", ref active) && collId.HasValue)
                 {
                     penumbra.SetModEnabled(collId.Value, entry.ModDirectory, active);
+                    // If a design binding drives this mod, fold the manual toggle into the binding so
+                    // the next restore doesn't flip it back (UI toggle vs. restore would otherwise fight).
+                    designBindings.UpdateActiveBindingMod(entry.ModDirectory, enabled: active);
                     compositor.TriggerRecomposite("penumbra-enable");
                 }
 
@@ -156,6 +159,8 @@ public class StatusWindow : Window
                     _priorityEdits.Remove(entry.ModDirectory);
                     if (collId.HasValue)
                         penumbra.SetModPriority(collId.Value, entry.ModDirectory, pri);
+                    // Fold the manual priority edit into the active binding (see enable toggle above).
+                    designBindings.UpdateActiveBindingMod(entry.ModDirectory, priority: pri);
                     compositor.TriggerRecomposite("penumbra-priority");
                 }
 

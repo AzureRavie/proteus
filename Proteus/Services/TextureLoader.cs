@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using Dalamud.Plugin.Services;
 using Lumina.Data;
 using Lumina.Data.Files;
@@ -31,6 +33,94 @@ public class TextureLoader
     {
         this.dataManager = dataManager;
         this.log = log;
+    }
+
+    // ── Decode cache ───────────────────────────────────────────────────────────
+    // A recomposite re-runs on every colour/design/enable change, but the underlying
+    // .tex/.png files almost never change between those triggers — so identical bytes
+    // were being BC-decompressed (skin .tex) and PNG-decoded (4K overlays) every run.
+    // Cache the decoded RGBA keyed by path + last-write-time + length so each file is
+    // decoded once and reused until it actually changes on disk. Bounded by a byte
+    // budget with LRU eviction. The Lazy wrapper guarantees a single decode even when
+    // several parallel composite tasks request the same file simultaneously.
+    //
+    // Mutation contract: base textures are composited in place, so LoadBaseTexture
+    // hands back a CLONE on a hit; overlay PNGs are treated read-only by every caller
+    // (each mutating consumer clones first), so LoadPngAsRgba shares the cached array.
+    private sealed class DecodedTex
+    {
+        public byte[] Rgba = Array.Empty<byte>();
+        public int Width;
+        public int Height;
+        public long LastAccess;
+    }
+
+    private readonly ConcurrentDictionary<string, Lazy<DecodedTex?>> decodeCache = new();
+    private long accessClock;
+    private const long DecodeCacheBudgetBytes = 512L * 1024 * 1024; // 512 MB
+
+    // Cache key for an on-disk file: prefix + path + write-time + length. Returns null
+    // (→ bypass the cache) if the file is missing or its metadata can't be read.
+    private static string? DiskKey(string prefix, string path)
+    {
+        try
+        {
+            var fi = new FileInfo(path);
+            if (!fi.Exists) return null;
+            return string.Concat(prefix, "|", path, "|",
+                fi.LastWriteTimeUtc.Ticks.ToString(), "|", fi.Length.ToString());
+        }
+        catch { return null; }
+    }
+
+    private DecodedTex? GetOrDecode(string key, Func<(byte[] rgba, int width, int height)?> decode)
+    {
+        var lazy = decodeCache.GetOrAdd(key, _ => new Lazy<DecodedTex?>(() =>
+        {
+            var r = decode();
+            return r == null
+                ? null
+                : new DecodedTex { Rgba = r.Value.rgba, Width = r.Value.width, Height = r.Value.height };
+        }, LazyThreadSafetyMode.ExecutionAndPublication));
+
+        DecodedTex? entry;
+        try { entry = lazy.Value; }
+        catch { decodeCache.TryRemove(new KeyValuePair<string, Lazy<DecodedTex?>>(key, lazy)); throw; }
+
+        // Don't keep failed decodes in the cache — let the next call retry.
+        if (entry == null)
+        {
+            decodeCache.TryRemove(new KeyValuePair<string, Lazy<DecodedTex?>>(key, lazy));
+            return null;
+        }
+
+        entry.LastAccess = Interlocked.Increment(ref accessClock);
+        TrimCache();
+        return entry;
+    }
+
+    // Evict least-recently-accessed materialized entries until under the byte budget.
+    // O(n) over the cache, but n is small (tens of entries) so this stays cheap.
+    private void TrimCache()
+    {
+        long total = 0;
+        foreach (var kv in decodeCache)
+            if (kv.Value.IsValueCreated && kv.Value.Value is { } d)
+                total += d.Rgba.Length;
+        if (total <= DecodeCacheBudgetBytes) return;
+
+        var live = new List<(string key, Lazy<DecodedTex?> lazy, DecodedTex d)>();
+        foreach (var kv in decodeCache)
+            if (kv.Value.IsValueCreated && kv.Value.Value is { } d)
+                live.Add((kv.Key, kv.Value, d));
+        live.Sort((a, b) => a.d.LastAccess.CompareTo(b.d.LastAccess));
+
+        foreach (var (k, lz, d) in live)
+        {
+            if (total <= DecodeCacheBudgetBytes) break;
+            if (decodeCache.TryRemove(new KeyValuePair<string, Lazy<DecodedTex?>>(k, lz)))
+                total -= d.Rgba.Length;
+        }
     }
 
     /// <summary>Parse an on-disk .mtrl file and return the game paths of its textures.</summary>
@@ -108,20 +198,37 @@ public class TextureLoader
     {
         if (diskPath != null && File.Exists(diskPath))
         {
-            var result = LoadTexAsRgba(diskPath);
-            if (result.HasValue) return result;
+            var key = DiskKey("BD", diskPath);
+            if (key != null)
+            {
+                var hit = GetOrDecode(key, () => LoadTexAsRgba(diskPath));
+                // Clone: the caller composites overlays into this buffer in place.
+                if (hit != null) return ((byte[])hit.Rgba.Clone(), hit.Width, hit.Height);
+                // Decode failed — fall through to the game-data fallback below.
+            }
+            else
+            {
+                var result = LoadTexAsRgba(diskPath);
+                if (result.HasValue) return result;
+            }
         }
-        try
+
+        // Vanilla game data is immutable for the session, so key by game path alone.
+        var ge = GetOrDecode("BG|" + gamePath, () =>
         {
-            var tex = dataManager.GetFile<TexFile>(gamePath);
-            if (tex == null) return null;
-            return ConvertTex(tex);
-        }
-        catch (Exception ex)
-        {
-            log.Error(ex, "Failed to load base texture from game data: {0}", gamePath);
-            return null;
-        }
+            try
+            {
+                var tex = dataManager.GetFile<TexFile>(gamePath);
+                if (tex == null) return null;
+                return ConvertTex(tex);
+            }
+            catch (Exception ex)
+            {
+                log.Error(ex, "Failed to load base texture from game data: {0}", gamePath);
+                return null;
+            }
+        });
+        return ge == null ? null : ((byte[])ge.Rgba.Clone(), ge.Width, ge.Height);
     }
 
     private static (byte[] rgba, int width, int height) ConvertTex(TexFile tex)
@@ -143,21 +250,30 @@ public class TextureLoader
     /// <summary>Load a PNG from disk, scale to (targetW × targetH) if needed. Returns null on failure.</summary>
     public byte[]? LoadPngAsRgba(string pngPath, int targetW, int targetH)
     {
-        try
+        (byte[] rgba, int width, int height)? Decode()
         {
-            using var stream = File.OpenRead(pngPath);
-            var img = ImageResult.FromStream(stream, StbImageSharp.ColorComponents.RedGreenBlueAlpha);
-
-            if (img.Width == targetW && img.Height == targetH)
-                return img.Data;
-
-            return ScaleNearest(img.Data, img.Width, img.Height, targetW, targetH);
+            try
+            {
+                using var stream = File.OpenRead(pngPath);
+                var img = ImageResult.FromStream(stream, StbImageSharp.ColorComponents.RedGreenBlueAlpha);
+                var data = (img.Width == targetW && img.Height == targetH)
+                    ? img.Data
+                    : ScaleNearest(img.Data, img.Width, img.Height, targetW, targetH);
+                return (data, targetW, targetH);
+            }
+            catch (Exception ex)
+            {
+                log.Error(ex, "Failed to load PNG: {0}", pngPath);
+                return null;
+            }
         }
-        catch (Exception ex)
-        {
-            log.Error(ex, "Failed to load PNG: {0}", pngPath);
-            return null;
-        }
+
+        // Key includes the target size — the same PNG is cached separately per scale.
+        var key = DiskKey("PNG", pngPath);
+        if (key == null) return Decode()?.rgba;
+
+        // Read-only for callers, so the cached array is shared (no clone).
+        return GetOrDecode(key + "|" + targetW + "x" + targetH, Decode)?.Rgba;
     }
 
     /// <summary>
