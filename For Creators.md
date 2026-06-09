@@ -241,6 +241,33 @@ Create a matching Penumbra group JSON for each group.
 
 If your mod has no options at all, use the top-level `Overlays` field instead of `OptionGroups`. The overlays apply unconditionally whenever the mod is enabled.
 
+### Masks
+
+Masks let users **carve away** parts of your overlays so the skin underneath (or a lower-priority mod) shows through — for example, a bodysuit that can hide its sleeves, gloves, or a chest panel.
+
+Masks are **convention-based** — there is nothing to add to `metadata.json`. You need two things:
+
+1. A Penumbra **multi-select** group named exactly **`Masks`** (set `"Type": "Multi"` in its group JSON).
+2. A `Proteus/Masks/` subfolder containing one **grayscale PNG per option**, named to match the option exactly: option `Sleeves` → `Proteus/Masks/Sleeves.png`.
+
+```
+YourMod/
+  group_002_Masks.json     ← Penumbra Multi group named "Masks"
+  Proteus/
+    metadata.json
+    Masks/
+      Sleeves.png
+      Chest.png
+```
+
+How a mask image is read:
+
+- Author masks as **8-bit grayscale PNGs** (no alpha channel). **White (255) keeps** the overlay; **black (0) reveals** what's underneath. Grays fade proportionally, so soft edges give soft transitions.
+- A mask applies to **every overlay in the same mod** (all groups/options), at full UV resolution. Author your mask in the same UV space as your overlays.
+- When a user selects **several masks at once**, they **stack multiplicatively** — each one carves out more area. Design each mask to be black only where *it* should hide and white everywhere else.
+
+Because `Masks` is just a Penumbra group, the user's selection is saved and restored by Glamourer designs automatically, and toggling a mask re-composites immediately.
+
 ### Distributing Your Mod
 
 Pack your mod folder as a `.zip` and rename the extension to `.pmp`. Penumbra imports `.pmp` files directly. Include everything in the mod root:

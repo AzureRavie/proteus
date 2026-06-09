@@ -335,6 +335,19 @@ public class CompositorService : IDisposable
             // Penumbra sees a genuinely different redirect path → forces a cache miss.
             var runId = Guid.NewGuid().ToString("N")[..8];
 
+            // Per-mod transparency masks (the "Masks" convention): a Penumbra multi-select group
+            // named "Masks" whose selected options each load a grayscale PNG from Proteus/Masks/.
+            // These reduce the coverage of every overlay in the same mod. Resolve the active mask
+            // files per mod once (Penumbra IPC), then combine + cache the keep-map per (mod, size)
+            // for the duration of this run.
+            var maskPathsByMod = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in entries)
+            {
+                var masks = discovery.ResolveActiveMasks(entry);
+                if (masks.Count > 0) maskPathsByMod[entry.ModDirectory] = masks;
+            }
+            var combinedMaskCache = new ConcurrentDictionary<(string mod, int w, int h), byte[]?>();
+
             Parallel.ForEach(byMaterial, new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = 4 }, kvp =>
             {
                 var (mtrlGamePath, pairs) = kvp;
@@ -342,6 +355,33 @@ public class CompositorService : IDisposable
                 // TextureLoader caches decoded PNGs across runs (keyed by path + mtime),
                 // and its Lazy wrapper dedups concurrent requests for the same file.
                 byte[]? LoadPng(string path, int w, int h) => textureLoader.LoadPngAsRgba(path, w, h);
+
+                // Combined grayscale keep-map (one byte/pixel, 255 = keep, 0 = reveal) for a mod's
+                // active masks at a given size. Multiplies each mask's red channel; cached per run.
+                // Masks are authored as 8-bit grayscale (R=G=B), so the red channel is the value.
+                // Returns null when the mod has no active masks.
+                byte[]? CombinedMaskAt(string modDir, int w, int h)
+                {
+                    if (!maskPathsByMod.TryGetValue(modDir, out var paths) || paths.Count == 0) return null;
+                    return combinedMaskCache.GetOrAdd((modDir, w, h), _ =>
+                    {
+                        byte[]? keep = null;
+                        foreach (var p in paths)
+                        {
+                            var m = textureLoader.LoadPngAsRgba(p, w, h); // RGBA; grayscale → R=G=B
+                            if (m == null) continue;
+                            if (keep == null)
+                            {
+                                keep = new byte[w * h];
+                                for (int pi = 0; pi < keep.Length; pi++) keep[pi] = m[pi * 4];
+                            }
+                            else
+                                for (int pi = 0; pi < keep.Length; pi++)
+                                    keep[pi] = (byte)(keep[pi] * m[pi * 4] / 255);
+                        }
+                        return keep;
+                    });
+                }
 
                 if (ct.IsCancellationRequested) return;
 
@@ -479,16 +519,41 @@ public class CompositorService : IDisposable
 
                     if (covSrc == null) continue; // no coverage — nothing to composite
 
+                    // ── Per-mod transparency masks ────────────────────────────
+                    // The diffuse overlay's own alpha (diffuseOv) is consumed directly by the diffuse
+                    // composite, so mask it here. covSrc stays UNMASKED as the canonical seed — CovAt
+                    // applies the mask itself on every path (including its native-size early-return),
+                    // so masking covSrc too would double-apply. (Synth/mask-only coverage isn't used
+                    // directly by any composite; those phases all gate through CovAt.)
+                    if (desc.Diffuse != null && diffuseOv != null)
+                    {
+                        var maskKeep = CombinedMaskAt(entry.ModDirectory, covW, covH);
+                        if (maskKeep != null) diffuseOv = ApplyCoverageMask(diffuseOv, maskKeep);
+                    }
+
                     // Returns the coverage mask resized to (tw × th) on demand.
                     // Re-loads from the diffuse PNG when possible; falls back to scaling.
+                    // The combined mask (if any) is multiplied in last, after opacity.
                     byte[]? CovAt(int tw, int th)
                     {
-                        if (tw == covW && th == covH) return covSrc; // already scaled
-                        byte[]? cov = desc.Diffuse != null
-                            ? LoadPng(Path.Combine(entry.SidecarRoot, desc.Diffuse), tw, th)
-                            : textureLoader.ScaleRgba(covSrc!, covW, covH, tw, th);
-                        if (cov != null && desc.Index == null && row16A.Opacity != 0)
-                            cov = ScaleOverlayAlpha(cov, row16A.Opacity);
+                        byte[]? cov;
+                        if (tw == covW && th == covH)
+                        {
+                            cov = covSrc; // unmasked seed
+                        }
+                        else
+                        {
+                            cov = desc.Diffuse != null
+                                ? LoadPng(Path.Combine(entry.SidecarRoot, desc.Diffuse), tw, th)
+                                : textureLoader.ScaleRgba(covSrc!, covW, covH, tw, th);
+                            if (cov != null && desc.Index == null && row16A.Opacity != 0)
+                                cov = ScaleOverlayAlpha(cov, row16A.Opacity);
+                        }
+                        if (cov != null)
+                        {
+                            var keep = CombinedMaskAt(entry.ModDirectory, tw, th);
+                            if (keep != null) cov = ApplyCoverageMask(cov, keep);
+                        }
                         return cov;
                     }
 
@@ -1104,6 +1169,20 @@ public class CompositorService : IDisposable
             else if (a > 0)
                 dst[i] = (byte)Math.Min(255, a + (255 - a) * opacity / 100);
         }
+        return dst;
+    }
+
+    // Multiply a coverage RGBA buffer's alpha by a one-byte-per-pixel grayscale keep-map
+    // (255 = keep the overlay, 0 = fully reveal what's underneath). Used by the per-mod "Masks"
+    // feature. Returns the input unchanged when keep is null; otherwise returns a clone, since the
+    // coverage may be a shared, cached PNG array that must not be mutated.
+    internal static byte[] ApplyCoverageMask(byte[] coverageRgba, byte[]? keep)
+    {
+        if (keep == null) return coverageRgba;
+        var dst = (byte[])coverageRgba.Clone();
+        int n = Math.Min(keep.Length, dst.Length / 4);
+        for (int pi = 0; pi < n; pi++)
+            dst[pi * 4 + 3] = (byte)(dst[pi * 4 + 3] * keep[pi] / 255);
         return dst;
     }
 

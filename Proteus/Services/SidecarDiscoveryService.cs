@@ -38,6 +38,13 @@ public class SidecarDiscoveryService
     private const string MetadataFile  = "metadata.json";
     public  const string ManagedModDir = "Proteus";  // directory name of the managed output mod
 
+    // Convention-based "Masks" feature: a Penumbra multi-select group named exactly "Masks"
+    // whose selected options each correspond to a grayscale PNG in the Proteus/Masks/ subfolder
+    // (Masks/<OptionName>.png). These masks reduce the coverage of every other overlay in the
+    // same mod. No metadata.json entry is required — selections are read straight from Penumbra.
+    public  const string MaskGroupName = "Masks";
+    private const string MaskSubdir    = "Masks";
+
     public SidecarDiscoveryService(PenumbraBridge penumbra, IPluginLog log)
     {
         this.penumbra = penumbra;
@@ -143,6 +150,49 @@ public class SidecarDiscoveryService
             }
         }
         return resolved;
+    }
+
+    /// <summary>
+    /// Resolve the grayscale transparency-mask images currently selected for an entry. These come
+    /// from a Penumbra multi-select group named <see cref="MaskGroupName"/> (no metadata.json entry
+    /// needed); each selected option <c>Foo</c> maps to <c>Proteus/Masks/Foo.png</c>. Returns the
+    /// absolute paths of the mask files that exist on disk (empty when none are selected). The
+    /// compositor multiplies these into every overlay's coverage for this mod.
+    /// </summary>
+    public List<string> ResolveActiveMasks(OverlayEntry entry)
+    {
+        var collId = penumbra.GetPlayerCollectionId();
+        if (collId == null) return [];
+
+        var settings = penumbra.GetModSettings(collId.Value, entry.ModDirectory);
+        if (settings == null) return [];
+
+        var selected = settings.Value.Options
+            .FirstOrDefault(kv => string.Equals(kv.Key, MaskGroupName, StringComparison.OrdinalIgnoreCase))
+            .Value;
+
+        return ResolveMaskPaths(entry.SidecarRoot, selected);
+    }
+
+    /// <summary>
+    /// Pure mapping from selected mask-option names to existing <c>Masks/&lt;name&gt;.png</c> files
+    /// under <paramref name="sidecarRoot"/>. Skips options whose file is missing; dedupes
+    /// case-insensitively. Factored out so it can be unit-tested without the Penumbra IPC.
+    /// </summary>
+    internal static List<string> ResolveMaskPaths(string sidecarRoot, IEnumerable<string>? selectedOptions)
+    {
+        var result = new List<string>();
+        if (selectedOptions == null) return result;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var option in selectedOptions)
+        {
+            if (string.IsNullOrWhiteSpace(option)) continue;
+            var path = Path.Combine(sidecarRoot, MaskSubdir, option + ".png");
+            if (seen.Add(path) && File.Exists(path))
+                result.Add(path);
+        }
+        return result;
     }
 
     /// <summary>

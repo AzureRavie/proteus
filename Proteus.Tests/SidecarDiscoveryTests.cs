@@ -279,6 +279,66 @@ public class SidecarDiscoveryTests
         Assert.Equal("Light", loaded.OptionGroups[0].Options[0].Name);
     }
 
+    // ── ResolveMaskPaths (pure: maps selected option names → existing Masks/<name>.png) ──
+
+    [Fact]
+    public void ResolveMaskPaths_NullSelection_ReturnsEmpty()
+    {
+        using var tmp = new TempDirectory();
+        Assert.Empty(SidecarDiscoveryService.ResolveMaskPaths(tmp.Path, null));
+    }
+
+    [Fact]
+    public void ResolveMaskPaths_ExistingFiles_ReturnedInOrder()
+    {
+        using var tmp = new TempDirectory();
+        var masksDir = Path.Combine(tmp.Path, "Masks");
+        Directory.CreateDirectory(masksDir);
+        File.WriteAllBytes(Path.Combine(masksDir, "Sleeves.png"), [0]);
+        File.WriteAllBytes(Path.Combine(masksDir, "Chest.png"),   [0]);
+
+        var result = SidecarDiscoveryService.ResolveMaskPaths(tmp.Path, ["Sleeves", "Chest"]);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal(Path.Combine(masksDir, "Sleeves.png"), result[0]);
+        Assert.Equal(Path.Combine(masksDir, "Chest.png"),   result[1]);
+    }
+
+    [Fact]
+    public void ResolveMaskPaths_MissingFile_Skipped()
+    {
+        using var tmp = new TempDirectory();
+        var masksDir = Path.Combine(tmp.Path, "Masks");
+        Directory.CreateDirectory(masksDir);
+        File.WriteAllBytes(Path.Combine(masksDir, "Sleeves.png"), [0]);
+
+        var result = SidecarDiscoveryService.ResolveMaskPaths(tmp.Path, ["Sleeves", "DoesNotExist"]);
+
+        Assert.Single(result);
+        Assert.EndsWith("Sleeves.png", result[0]);
+    }
+
+    [Fact]
+    public void ResolveMaskPaths_DuplicateSelection_Deduped()
+    {
+        using var tmp = new TempDirectory();
+        var masksDir = Path.Combine(tmp.Path, "Masks");
+        Directory.CreateDirectory(masksDir);
+        File.WriteAllBytes(Path.Combine(masksDir, "Sleeves.png"), [0]);
+
+        var result = SidecarDiscoveryService.ResolveMaskPaths(tmp.Path, ["Sleeves", "sleeves", "Sleeves"]);
+
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public void ResolveMaskPaths_BlankOption_Skipped()
+    {
+        using var tmp = new TempDirectory();
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "Masks"));
+        Assert.Empty(SidecarDiscoveryService.ResolveMaskPaths(tmp.Path, ["", "   "]));
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static OverlayEntry Entry(ProteusMetadata meta, string? sidecarRoot = null) =>
