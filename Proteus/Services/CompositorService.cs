@@ -357,14 +357,13 @@ public class CompositorService : IDisposable
                 byte[]? LoadPng(string path, int w, int h) => textureLoader.LoadPngAsRgba(path, w, h);
 
                 // Combined coverage-mask for a mod's active masks at a given size, cached per run.
-                // A mask sets coverage opacity EXPLICITLY: its grayscale RGB is the target opacity and
-                // its alpha is how strongly to apply that target (white = fully set, black = no effect):
-                //   cov' = lerp(cov, gray, a) = cov*(1-a) + gray*a.
-                // Several masks compose sequentially, which collapses to cov' = cov*W + T per pixel,
-                // where W = Π(1-aᵢ) (how much original coverage survives) and T accumulates gray*a.
-                // `paths` is ordered highest-priority-first, and the last mask applied wins, so we
-                // iterate in reverse: the top-of-list mask is applied last and takes precedence where
-                // masks overlap. Returns null when the mod has no active masks. W/T are bytes (0–255).
+                // A mask SCALES the overlay's opacity by its grayscale value, gated by its alpha
+                // (white alpha = fully apply, black = no effect): keep = lerp(1, gray, a). The
+                // overlay's own coverage bounds the result, so a mask never paints where the overlay
+                // is transparent (see ApplyCoverageMask). Stored as W = Π(1-aᵢ) (original-coverage
+                // survival) and T (accumulated gray*a target); the apply step is cov' = cov*(W+T)/255.
+                // `paths` is ordered highest-priority-first and applied in reverse so the top-of-list
+                // mask wins where masks overlap. Returns null when none active. W/T are bytes (0–255).
                 (byte[] W, byte[] T)? CombinedMaskAt(string modDir, int w, int h)
                 {
                     if (!maskPathsByMod.TryGetValue(modDir, out var paths) || paths.Count == 0) return null;
@@ -1196,9 +1195,11 @@ public class CompositorService : IDisposable
         return dst;
     }
 
-    // Set a coverage RGBA buffer's alpha from a per-mod "Masks" map: cov' = cov*W + T, where
-    // W (how much the overlay's original coverage survives) and T (the mask's explicit target
-    // opacity contribution) are the combined per-pixel weight/target maps from CombinedMaskAt.
+    // Apply a per-mod "Masks" map to a coverage RGBA buffer. A mask SCALES the overlay's own
+    // opacity — it can hold or reduce coverage but never create it, so where the overlay is
+    // transparent (alpha 0) the mask has no effect and can't paint outside the garment. Per pixel
+    // cov' = cov * (W + T) / 255, where W (how much original coverage survives) and T (the mask's
+    // target contribution) come from CombinedMaskAt; gating both by cov is what bounds the result.
     // Returns the input unchanged when the map is null; otherwise returns a clone, since the
     // coverage may be a shared, cached PNG array that must not be mutated.
     internal static byte[] ApplyCoverageMask(byte[] coverageRgba, byte[]? w, byte[]? t)
@@ -1208,8 +1209,9 @@ public class CompositorService : IDisposable
         int n = Math.Min(w.Length, dst.Length / 4);
         for (int pi = 0; pi < n; pi++)
         {
-            int v = dst[pi * 4 + 3] * w[pi] / 255 + t[pi];
-            dst[pi * 4 + 3] = (byte)(v > 255 ? 255 : v);
+            int keep = w[pi] + t[pi];          // surviving + target, both per-pixel fractions ×255
+            if (keep > 255) keep = 255;
+            dst[pi * 4 + 3] = (byte)(dst[pi * 4 + 3] * keep / 255);
         }
         return dst;
     }

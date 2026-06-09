@@ -405,10 +405,11 @@ public class CompositorMathTests
         Assert.Equal(128, src[3]);
     }
 
-    // ── ApplyCoverageMask (cov' = cov*W + T) ──────────────────────────────────
-    // W = how much the overlay's original coverage survives (Π(1-aᵢ)); T = explicit target
-    // opacity contribution (Σ gray·a). Alpha black → W=255,T=0 (no effect); alpha white →
-    // W=0, T=gray (coverage set explicitly to the grayscale value).
+    // ── ApplyCoverageMask (cov' = cov*(W+T)/255) ──────────────────────────────
+    // A mask SCALES the overlay's own opacity, gated by the base coverage so it can never paint
+    // where the overlay is transparent. W = original-coverage survival (Π(1-aᵢ)); T = accumulated
+    // gray·a target. keep = W+T; cov' = cov*keep/255. Mask alpha black → keep=255 (no effect);
+    // alpha white → keep=gray (overlay scaled to the grayscale fraction).
 
     [Fact]
     public void ApplyCoverageMask_NullMap_ReturnsSameReference()
@@ -418,45 +419,55 @@ public class CompositorMathTests
     }
 
     [Fact]
+    public void ApplyCoverageMask_BaseTransparent_StaysTransparent()
+    {
+        // THE BUG: base coverage 0 (e.g. above the stocking) must stay 0 even when the mask is
+        // fully applied white (W=0, T=255). A mask can't create coverage where the overlay is absent.
+        var cov    = RGBA(255, 255, 255, 0);
+        var result = CompositorService.ApplyCoverageMask(cov, new byte[] { 0 }, new byte[] { 255 });
+        Assert.Equal(0, result[3]);
+    }
+
+    [Fact]
     public void ApplyCoverageMask_AlphaBlack_LeavesCoverageUnchanged()
     {
-        // alpha=0 → W=255, T=0 → cov' = cov*1 + 0 = cov (mask does nothing)
+        // alpha=0 → W=255, T=0 → keep=255 → cov' = cov (mask does nothing)
         var cov    = RGBA(255, 255, 255, 200);
         var result = CompositorService.ApplyCoverageMask(cov, new byte[] { 255 }, new byte[] { 0 });
         Assert.Equal(200, result[3]);
     }
 
     [Fact]
-    public void ApplyCoverageMask_AlphaWhiteGrayBlack_ForcesTransparent()
+    public void ApplyCoverageMask_AlphaWhiteGrayBlack_RemovesCoverage()
     {
-        // alpha=255, gray=0 → W=0, T=0 → cov' = 0 (explicit hole)
+        // alpha=255, gray=0 → W=0, T=0 → keep=0 → cov' = 0 (rip / hole)
         var cov    = RGBA(255, 255, 255, 200);
         var result = CompositorService.ApplyCoverageMask(cov, new byte[] { 0 }, new byte[] { 0 });
         Assert.Equal(0, result[3]);
     }
 
     [Fact]
-    public void ApplyCoverageMask_AlphaWhiteGrayWhite_ForcesOpaque()
+    public void ApplyCoverageMask_AlphaWhiteGrayWhite_KeepsBaseCoverage()
     {
-        // alpha=255, gray=255 → W=0, T=255 → cov' = 255 even though original coverage was low
+        // alpha=255, gray=255 → W=0, T=255 → keep=255 → cov' = cov (scales by ×1, never above base)
         var cov    = RGBA(255, 255, 255, 40);
         var result = CompositorService.ApplyCoverageMask(cov, new byte[] { 0 }, new byte[] { 255 });
-        Assert.Equal(255, result[3]);
+        Assert.Equal(40, result[3]);
     }
 
     [Fact]
-    public void ApplyCoverageMask_AlphaWhiteGrayMid_SetsExplicitOpacity()
+    public void ApplyCoverageMask_AlphaWhiteGrayMid_ScalesBaseToFraction()
     {
-        // alpha=255, gray=128 → W=0, T=128 → cov' = 128 regardless of original (explicit set)
-        var cov    = RGBA(255, 255, 255, 255);
+        // alpha=255, gray=128 → W=0, T=128 → keep=128 → cov' = cov*128/255
+        var cov    = RGBA(255, 255, 255, 200);
         var result = CompositorService.ApplyCoverageMask(cov, new byte[] { 0 }, new byte[] { 128 });
-        Assert.Equal(128, result[3]);
+        Assert.Equal(200 * 128 / 255, result[3]);
     }
 
     [Fact]
-    public void ApplyCoverageMask_AlphaHalf_BlendsOriginalTowardTarget()
+    public void ApplyCoverageMask_AlphaHalfGrayBlack_HalfwayRemoval()
     {
-        // a=128 → W=127, T=gray*a/255. gray=0 → T=0. cov=200 → cov' = 200*127/255 ≈ 99
+        // a=128 → W=127, T=0 → keep=127 → cov' = 200*127/255 ≈ 99
         var cov    = RGBA(255, 255, 255, 200);
         var result = CompositorService.ApplyCoverageMask(cov, new byte[] { 127 }, new byte[] { 0 });
         Assert.Equal(200 * 127 / 255, result[3]);
@@ -483,7 +494,7 @@ public class CompositorMathTests
     [Fact]
     public void ApplyCoverageMask_MultiplePixels_AppliesPerPixel()
     {
-        // pixel 0: alpha black (W=255,T=0) → unchanged; pixel 1: alpha white gray black → 0
+        // pixel 0: alpha black (keep=255) → unchanged; pixel 1: alpha white gray black (keep=0) → 0
         var cov    = new byte[] { 255, 0, 0, 255,  0, 255, 0, 255 };
         var result = CompositorService.ApplyCoverageMask(cov, new byte[] { 255, 0 }, new byte[] { 0, 0 });
         Assert.Equal(255, result[3]);
