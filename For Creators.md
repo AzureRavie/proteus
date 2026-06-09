@@ -260,14 +260,14 @@ YourMod/
       Chest.png
 ```
 
-How a mask image is read — a mask **scales the overlay's own opacity**, using two channels:
+How a mask image is read — a mask sets the overlay's opacity **explicitly**, using two channels:
 
-- **RGB (grayscale) = how much of the overlay's opacity to keep.** Black (0) → removed (skin shows through), white (255) → kept as-is, grays → scaled to that fraction. A mask can only hold or reduce coverage, never add it.
-- **Alpha = how strongly that scaling is applied.** White alpha (255) → fully apply the RGB scaling; black alpha (0) → the mask does nothing there and the overlay is untouched; grays blend between the two. Think of alpha as "where this mask has any say at all," and RGB as "how much of the overlay survives there."
+- **RGB (grayscale) = the target opacity.** Where the mask takes effect, the overlay's coverage is *set to* this value: black (0) → fully transparent (skin shows), white (255) → fully opaque, grays → that exact opacity. It's an explicit set, not a fade of the existing coverage — so a white patch can **add** opacity, forcing an opaque band even where the overlay was sheer.
+- **Alpha = how strongly the target is applied.** White alpha (255) → fully apply the target opacity above; black alpha (0) → the mask does nothing there and the overlay keeps its own coverage; grays blend between the two. Think of alpha as "where this mask has any say at all," and RGB as "what opacity it forces there."
 
-So to punch a clean hole, paint the hole region **alpha = white, RGB = black**, and leave everywhere else **alpha = black**.
+So to punch a clean hole, paint the hole region **alpha = white, RGB = black**; to force a patch fully opaque, paint it **alpha = white, RGB = white**; leave everywhere else **alpha = black**.
 
-- **A mask never paints outside the overlay.** Where the overlay itself is transparent (e.g. above where a stocking ends), the mask has no effect — it can't create coverage the overlay doesn't have. You don't need to carefully avoid those areas in your mask.
+- **A mask only acts where the overlay is already visible.** The added opacity is gated by the overlay's own coverage: where the overlay is fully transparent (above where a stocking ends, or the holes of a fishnet) the mask has no effect — it can boost a sheer area to opaque, but it can never paint opacity onto bare skin. You don't need to carefully avoid those areas in your mask.
 - A mask applies to **every overlay in the same mod** (all groups/options), at full UV resolution. Author your mask in the same UV space as your overlays.
 - When a user selects **several masks at once**, masks **higher in the Penumbra group list win** where they overlap — the top mask sets the opacity in its alpha region, and lower masks only show through where the higher one's alpha leaves room.
 

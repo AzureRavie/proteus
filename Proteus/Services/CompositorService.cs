@@ -357,11 +357,13 @@ public class CompositorService : IDisposable
                 byte[]? LoadPng(string path, int w, int h) => textureLoader.LoadPngAsRgba(path, w, h);
 
                 // Combined coverage-mask for a mod's active masks at a given size, cached per run.
-                // A mask SCALES the overlay's opacity by its grayscale value, gated by its alpha
-                // (white alpha = fully apply, black = no effect): keep = lerp(1, gray, a). The
-                // overlay's own coverage bounds the result, so a mask never paints where the overlay
-                // is transparent (see ApplyCoverageMask). Stored as W = Π(1-aᵢ) (original-coverage
-                // survival) and T (accumulated gray*a target); the apply step is cov' = cov*(W+T)/255.
+                // A mask SETS coverage opacity explicitly within its alpha region: its grayscale RGB
+                // is the target opacity and its alpha is how strongly to apply it (white alpha = fully
+                // set, black = no effect): cov' = lerp(cov, gray, a) = cov*(1-a) + gray*a. This is
+                // additive — a white patch can force full opacity over a sheer area (but only where
+                // the overlay already has some coverage; see ApplyCoverageMask's base-alpha gate).
+                // Stored as W = Π(1-aᵢ) (how much original coverage survives) and T (accumulated
+                // gray*a target); the apply step is cov' = cov*W + T, gated by base alpha > 0.
                 // `paths` is ordered highest-priority-first and applied in reverse so the top-of-list
                 // mask wins where masks overlap. Returns null when none active. W/T are bytes (0–255).
                 (byte[] W, byte[] T)? CombinedMaskAt(string modDir, int w, int h)
@@ -1195,11 +1197,14 @@ public class CompositorService : IDisposable
         return dst;
     }
 
-    // Apply a per-mod "Masks" map to a coverage RGBA buffer. A mask SCALES the overlay's own
-    // opacity — it can hold or reduce coverage but never create it, so where the overlay is
-    // transparent (alpha 0) the mask has no effect and can't paint outside the garment. Per pixel
-    // cov' = cov * (W + T) / 255, where W (how much original coverage survives) and T (the mask's
-    // target contribution) come from CombinedMaskAt; gating both by cov is what bounds the result.
+    // Apply a per-mod "Masks" map to a coverage RGBA buffer. A mask SETS the overlay's opacity
+    // explicitly within its alpha region: cov' = cov*W + T, where W (how much the overlay's own
+    // coverage survives, = Π(1-aᵢ)) and T (the mask's target opacity contribution, = Σ gray·a) come
+    // from CombinedMaskAt. This is additive WHERE THE OVERLAY IS ALREADY VISIBLE — a white-RGB/white-
+    // alpha patch (W=0, T=255) forces full opacity over a sheer area, so masks can ADD coverage, not
+    // only remove it. But the additive term is gated by the base coverage: where the overlay's own
+    // alpha is 0 (outside the garment — e.g. above where a stocking ends, or the holes of a fishnet)
+    // the pixel stays fully transparent, so a mask can never paint opacity onto bare skin.
     // Returns the input unchanged when the map is null; otherwise returns a clone, since the
     // coverage may be a shared, cached PNG array that must not be mutated.
     internal static byte[] ApplyCoverageMask(byte[] coverageRgba, byte[]? w, byte[]? t)
@@ -1209,9 +1214,10 @@ public class CompositorService : IDisposable
         int n = Math.Min(w.Length, dst.Length / 4);
         for (int pi = 0; pi < n; pi++)
         {
-            int keep = w[pi] + t[pi];          // surviving + target, both per-pixel fractions ×255
-            if (keep > 255) keep = 255;
-            dst[pi * 4 + 3] = (byte)(dst[pi * 4 + 3] * keep / 255);
+            int baseA = dst[pi * 4 + 3];
+            if (baseA == 0) continue;                        // no base coverage → mask has no say (stays 0)
+            int v = baseA * w[pi] / 255 + t[pi];             // surviving overlay coverage + mask target
+            dst[pi * 4 + 3] = (byte)(v > 255 ? 255 : v);
         }
         return dst;
     }

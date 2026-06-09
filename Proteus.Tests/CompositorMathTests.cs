@@ -405,11 +405,13 @@ public class CompositorMathTests
         Assert.Equal(128, src[3]);
     }
 
-    // ── ApplyCoverageMask (cov' = cov*(W+T)/255) ──────────────────────────────
-    // A mask SCALES the overlay's own opacity, gated by the base coverage so it can never paint
-    // where the overlay is transparent. W = original-coverage survival (Π(1-aᵢ)); T = accumulated
-    // gray·a target. keep = W+T; cov' = cov*keep/255. Mask alpha black → keep=255 (no effect);
-    // alpha white → keep=gray (overlay scaled to the grayscale fraction).
+    // ── ApplyCoverageMask (cov' = cov*W + T, gated by base alpha > 0) ──────────
+    // A mask SETS the overlay's opacity explicitly within its alpha region (additive): it can force
+    // opacity over a SHEER area, not only reduce it. W = original-coverage survival (Π(1-aᵢ)); T =
+    // accumulated gray·a target. cov' = cov*W + T (clamped to 255) — but ONLY where the base overlay
+    // already has coverage (alpha > 0). Where base alpha = 0 the pixel stays 0, so a mask can never
+    // paint onto bare skin. Mask alpha black → W=255, T=0 → cov' = cov (no effect); alpha white →
+    // W=0, cov' = gray target (gated by base > 0).
 
     [Fact]
     public void ApplyCoverageMask_NullMap_ReturnsSameReference()
@@ -419,13 +421,24 @@ public class CompositorMathTests
     }
 
     [Fact]
-    public void ApplyCoverageMask_BaseTransparent_StaysTransparent()
+    public void ApplyCoverageMask_BaseTransparent_StaysTransparent_EvenUnderWhite()
     {
-        // THE BUG: base coverage 0 (e.g. above the stocking) must stay 0 even when the mask is
-        // fully applied white (W=0, T=255). A mask can't create coverage where the overlay is absent.
+        // THE GATE: base coverage 0 (bare skin above the stocking, or a fishnet hole) stays 0 even
+        // when the mask is fully applied white (W=0, T=255). A mask can boost a sheer area to opaque
+        // but can NEVER create coverage where the overlay is absent.
         var cov    = RGBA(255, 255, 255, 0);
         var result = CompositorService.ApplyCoverageMask(cov, new byte[] { 0 }, new byte[] { 255 });
         Assert.Equal(0, result[3]);
+    }
+
+    [Fact]
+    public void ApplyCoverageMask_BaseSheer_WhiteForcesOpaque()
+    {
+        // Additive over a SHEER base: alpha=40 (visible but sheer), mask white (W=0, T=255) → forced
+        // to 255. This is what paints the opaque bands at the bottom of a sheer stocking.
+        var cov    = RGBA(255, 255, 255, 40);
+        var result = CompositorService.ApplyCoverageMask(cov, new byte[] { 0 }, new byte[] { 255 });
+        Assert.Equal(255, result[3]);
     }
 
     [Fact]
@@ -447,21 +460,21 @@ public class CompositorMathTests
     }
 
     [Fact]
-    public void ApplyCoverageMask_AlphaWhiteGrayWhite_KeepsBaseCoverage()
+    public void ApplyCoverageMask_AlphaWhiteGrayWhite_ForcesOpaque()
     {
-        // alpha=255, gray=255 → W=0, T=255 → keep=255 → cov' = cov (scales by ×1, never above base)
+        // alpha=255, gray=255 → W=0, T=255 → cov' = 255 (forced opaque, above the sheer base of 40)
         var cov    = RGBA(255, 255, 255, 40);
         var result = CompositorService.ApplyCoverageMask(cov, new byte[] { 0 }, new byte[] { 255 });
-        Assert.Equal(40, result[3]);
+        Assert.Equal(255, result[3]);
     }
 
     [Fact]
-    public void ApplyCoverageMask_AlphaWhiteGrayMid_ScalesBaseToFraction()
+    public void ApplyCoverageMask_AlphaWhiteGrayMid_SetsToTarget()
     {
-        // alpha=255, gray=128 → W=0, T=128 → keep=128 → cov' = cov*128/255
+        // alpha=255, gray=128 → W=0, T=128 → cov' = 128 (set to the gray target, regardless of base)
         var cov    = RGBA(255, 255, 255, 200);
         var result = CompositorService.ApplyCoverageMask(cov, new byte[] { 0 }, new byte[] { 128 });
-        Assert.Equal(200 * 128 / 255, result[3]);
+        Assert.Equal(128, result[3]);
     }
 
     [Fact]
