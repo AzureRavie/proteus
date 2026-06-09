@@ -346,7 +346,7 @@ public class CompositorService : IDisposable
                 var masks = discovery.ResolveActiveMasks(entry);
                 if (masks.Count > 0) maskPathsByMod[entry.ModDirectory] = masks;
             }
-            var combinedMaskCache = new ConcurrentDictionary<(string mod, int w, int h), byte[]?>();
+            var combinedMaskCache = new ConcurrentDictionary<(string mod, int w, int h), (byte[] W, byte[] T)?>();
 
             Parallel.ForEach(byMaterial, new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = 4 }, kvp =>
             {
@@ -356,30 +356,54 @@ public class CompositorService : IDisposable
                 // and its Lazy wrapper dedups concurrent requests for the same file.
                 byte[]? LoadPng(string path, int w, int h) => textureLoader.LoadPngAsRgba(path, w, h);
 
-                // Combined grayscale keep-map (one byte/pixel, 255 = keep, 0 = reveal) for a mod's
-                // active masks at a given size. Multiplies each mask's red channel; cached per run.
-                // Masks are authored as 8-bit grayscale (R=G=B), so the red channel is the value.
-                // Returns null when the mod has no active masks.
-                byte[]? CombinedMaskAt(string modDir, int w, int h)
+                // Combined coverage-mask for a mod's active masks at a given size, cached per run.
+                // A mask sets coverage opacity EXPLICITLY: its grayscale RGB is the target opacity and
+                // its alpha is how strongly to apply that target (white = fully set, black = no effect):
+                //   cov' = lerp(cov, gray, a) = cov*(1-a) + gray*a.
+                // Several masks compose sequentially, which collapses to cov' = cov*W + T per pixel,
+                // where W = Π(1-aᵢ) (how much original coverage survives) and T accumulates gray*a.
+                // `paths` is ordered highest-priority-first, and the last mask applied wins, so we
+                // iterate in reverse: the top-of-list mask is applied last and takes precedence where
+                // masks overlap. Returns null when the mod has no active masks. W/T are bytes (0–255).
+                (byte[] W, byte[] T)? CombinedMaskAt(string modDir, int w, int h)
                 {
                     if (!maskPathsByMod.TryGetValue(modDir, out var paths) || paths.Count == 0) return null;
                     return combinedMaskCache.GetOrAdd((modDir, w, h), _ =>
                     {
-                        byte[]? keep = null;
-                        foreach (var p in paths)
+                        int n = w * h;
+                        byte[]? wArr = null, tArr = null;
+                        for (int pidx = paths.Count - 1; pidx >= 0; pidx--)
                         {
-                            var m = textureLoader.LoadPngAsRgba(p, w, h); // RGBA; grayscale → R=G=B
+                            var m = textureLoader.LoadPngAsRgba(paths[pidx], w, h);
                             if (m == null) continue;
-                            if (keep == null)
+                            if (wArr == null)
                             {
-                                keep = new byte[w * h];
-                                for (int pi = 0; pi < keep.Length; pi++) keep[pi] = m[pi * 4];
+                                wArr = new byte[n];
+                                tArr = new byte[n];
+                                for (int pi = 0; pi < n; pi++)
+                                {
+                                    int o = pi * 4;
+                                    int a = m[o + 3];
+                                    int g = (m[o] * 77 + m[o + 1] * 150 + m[o + 2] * 29) >> 8; // luminance
+                                    wArr[pi] = (byte)(255 - a);       // (1-a)
+                                    tArr[pi] = (byte)(g * a / 255);   // gray*a
+                                }
                             }
                             else
-                                for (int pi = 0; pi < keep.Length; pi++)
-                                    keep[pi] = (byte)(keep[pi] * m[pi * 4] / 255);
+                            {
+                                for (int pi = 0; pi < n; pi++)
+                                {
+                                    int o = pi * 4;
+                                    int a = m[o + 3];
+                                    int g = (m[o] * 77 + m[o + 1] * 150 + m[o + 2] * 29) >> 8;
+                                    int inv = 255 - a;
+                                    // T' = T*(1-a) + gray*a ;  W' = W*(1-a)
+                                    tArr![pi] = (byte)(tArr[pi] * inv / 255 + g * a / 255);
+                                    wArr[pi]  = (byte)(wArr[pi] * inv / 255);
+                                }
+                            }
                         }
-                        return keep;
+                        return wArr == null ? ((byte[] W, byte[] T)?)null : (wArr, tArr!);
                     });
                 }
 
@@ -527,13 +551,13 @@ public class CompositorService : IDisposable
                     // directly by any composite; those phases all gate through CovAt.)
                     if (desc.Diffuse != null && diffuseOv != null)
                     {
-                        var maskKeep = CombinedMaskAt(entry.ModDirectory, covW, covH);
-                        if (maskKeep != null) diffuseOv = ApplyCoverageMask(diffuseOv, maskKeep);
+                        var mask = CombinedMaskAt(entry.ModDirectory, covW, covH);
+                        if (mask != null) diffuseOv = ApplyCoverageMask(diffuseOv, mask.Value.W, mask.Value.T);
                     }
 
                     // Returns the coverage mask resized to (tw × th) on demand.
                     // Re-loads from the diffuse PNG when possible; falls back to scaling.
-                    // The combined mask (if any) is multiplied in last, after opacity.
+                    // The combined mask (if any) sets coverage opacity last, after opacity.
                     byte[]? CovAt(int tw, int th)
                     {
                         byte[]? cov;
@@ -551,8 +575,8 @@ public class CompositorService : IDisposable
                         }
                         if (cov != null)
                         {
-                            var keep = CombinedMaskAt(entry.ModDirectory, tw, th);
-                            if (keep != null) cov = ApplyCoverageMask(cov, keep);
+                            var mask = CombinedMaskAt(entry.ModDirectory, tw, th);
+                            if (mask != null) cov = ApplyCoverageMask(cov, mask.Value.W, mask.Value.T);
                         }
                         return cov;
                     }
@@ -1172,17 +1196,21 @@ public class CompositorService : IDisposable
         return dst;
     }
 
-    // Multiply a coverage RGBA buffer's alpha by a one-byte-per-pixel grayscale keep-map
-    // (255 = keep the overlay, 0 = fully reveal what's underneath). Used by the per-mod "Masks"
-    // feature. Returns the input unchanged when keep is null; otherwise returns a clone, since the
+    // Set a coverage RGBA buffer's alpha from a per-mod "Masks" map: cov' = cov*W + T, where
+    // W (how much the overlay's original coverage survives) and T (the mask's explicit target
+    // opacity contribution) are the combined per-pixel weight/target maps from CombinedMaskAt.
+    // Returns the input unchanged when the map is null; otherwise returns a clone, since the
     // coverage may be a shared, cached PNG array that must not be mutated.
-    internal static byte[] ApplyCoverageMask(byte[] coverageRgba, byte[]? keep)
+    internal static byte[] ApplyCoverageMask(byte[] coverageRgba, byte[]? w, byte[]? t)
     {
-        if (keep == null) return coverageRgba;
+        if (w == null || t == null) return coverageRgba;
         var dst = (byte[])coverageRgba.Clone();
-        int n = Math.Min(keep.Length, dst.Length / 4);
+        int n = Math.Min(w.Length, dst.Length / 4);
         for (int pi = 0; pi < n; pi++)
-            dst[pi * 4 + 3] = (byte)(dst[pi * 4 + 3] * keep[pi] / 255);
+        {
+            int v = dst[pi * 4 + 3] * w[pi] / 255 + t[pi];
+            dst[pi * 4 + 3] = (byte)(v > 255 ? 255 : v);
+        }
         return dst;
     }
 

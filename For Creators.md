@@ -260,11 +260,15 @@ YourMod/
       Chest.png
 ```
 
-How a mask image is read:
+How a mask image is read — a mask sets the overlay's opacity **explicitly**, using two channels:
 
-- Author masks as **8-bit grayscale PNGs** (no alpha channel). **White (255) keeps** the overlay; **black (0) reveals** what's underneath. Grays fade proportionally, so soft edges give soft transitions.
+- **RGB (grayscale) = the target opacity.** Where the mask takes effect, the overlay's coverage is *set to* this value: black (0) → fully transparent (skin shows), white (255) → fully opaque, grays → that exact opacity. It's an explicit set, not a fade of the existing coverage.
+- **Alpha = how strongly the target is applied.** White alpha (255) → fully apply the target opacity above; black alpha (0) → the mask does nothing there and the overlay keeps its own coverage; grays blend between the two. Think of alpha as "where this mask has any say at all," and RGB as "what opacity it forces there."
+
+So to punch a clean hole, paint the hole region **alpha = white, RGB = black**; leave everywhere else **alpha = black**. To force a patch fully opaque, paint it **alpha = white, RGB = white**.
+
 - A mask applies to **every overlay in the same mod** (all groups/options), at full UV resolution. Author your mask in the same UV space as your overlays.
-- When a user selects **several masks at once**, they **stack multiplicatively** — each one carves out more area. Design each mask to be black only where *it* should hide and white everywhere else.
+- When a user selects **several masks at once**, masks **higher in the Penumbra group list win** where they overlap — the top mask sets the opacity in its alpha region, and lower masks only show through where the higher one's alpha leaves room.
 
 Because `Masks` is just a Penumbra group, the user's selection is saved and restored by Glamourer designs automatically, and toggling a mask re-composites immediately.
 

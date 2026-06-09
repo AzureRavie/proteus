@@ -339,6 +339,78 @@ public class SidecarDiscoveryTests
         Assert.Empty(SidecarDiscoveryService.ResolveMaskPaths(tmp.Path, ["", "   "]));
     }
 
+    // ── Mask priority ordering (higher in the group list wins) ──────────────────
+
+    private const string MasksGroupJson = """
+        {
+          "Name": "Masks",
+          "Type": "Multi",
+          "Options": [
+            { "Name": "Asymmetric High" },
+            { "Name": "Asymmetric" },
+            { "Name": "Ripped" },
+            { "Name": "Strategically Ripped" },
+            { "Name": "Stirrups" }
+          ]
+        }
+        """;
+
+    [Fact]
+    public void ReadMaskGroupOptionOrder_ReadsNamesInGroupOrder()
+    {
+        using var tmp = new TempDirectory();
+        File.WriteAllText(Path.Combine(tmp.Path, "group_001_masks.json"), MasksGroupJson);
+
+        var order = SidecarDiscoveryService.ReadMaskGroupOptionOrder(tmp.Path);
+
+        Assert.Equal(
+            ["Asymmetric High", "Asymmetric", "Ripped", "Strategically Ripped", "Stirrups"],
+            order);
+    }
+
+    [Fact]
+    public void ReadMaskGroupOptionOrder_IgnoresNonMaskGroups_ReturnsEmpty()
+    {
+        using var tmp = new TempDirectory();
+        File.WriteAllText(Path.Combine(tmp.Path, "group_002_style.json"),
+            """{ "Name": "Style", "Options": [ { "Name": "A" } ] }""");
+
+        Assert.Empty(SidecarDiscoveryService.ReadMaskGroupOptionOrder(tmp.Path));
+    }
+
+    [Fact]
+    public void ReadMaskGroupOptionOrder_NoGroupFiles_ReturnsEmpty()
+    {
+        using var tmp = new TempDirectory();
+        Assert.Empty(SidecarDiscoveryService.ReadMaskGroupOptionOrder(tmp.Path));
+    }
+
+    [Fact]
+    public void OrderByGroup_SortsSelectedByGroupOrder()
+    {
+        var order = new List<string> { "Asymmetric High", "Asymmetric", "Ripped", "Strategically Ripped", "Stirrups" };
+        // selected arrives in some arbitrary order
+        var result = SidecarDiscoveryService.OrderByGroup(["Stirrups", "Asymmetric", "Ripped"], order);
+        Assert.Equal(["Asymmetric", "Ripped", "Stirrups"], result);
+    }
+
+    [Fact]
+    public void OrderByGroup_UnknownNamesGoLast_StableAmongThemselves()
+    {
+        var order  = new List<string> { "Asymmetric", "Ripped" };
+        var result = SidecarDiscoveryService.OrderByGroup(["Mystery", "Ripped", "Other"], order);
+        // "Ripped" is known (index 1) → first; unknowns keep input order after.
+        Assert.Equal(["Ripped", "Mystery", "Other"], result);
+    }
+
+    [Fact]
+    public void OrderByGroup_CaseInsensitiveMatch()
+    {
+        var order  = new List<string> { "Asymmetric High", "Stirrups" };
+        var result = SidecarDiscoveryService.OrderByGroup(["stirrups", "ASYMMETRIC HIGH"], order);
+        Assert.Equal(["ASYMMETRIC HIGH", "stirrups"], result);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static OverlayEntry Entry(ProteusMetadata meta, string? sidecarRoot = null) =>

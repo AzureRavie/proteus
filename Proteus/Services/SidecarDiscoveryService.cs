@@ -156,8 +156,9 @@ public class SidecarDiscoveryService
     /// Resolve the grayscale transparency-mask images currently selected for an entry. These come
     /// from a Penumbra multi-select group named <see cref="MaskGroupName"/> (no metadata.json entry
     /// needed); each selected option <c>Foo</c> maps to <c>Proteus/Masks/Foo.png</c>. Returns the
-    /// absolute paths of the mask files that exist on disk (empty when none are selected). The
-    /// compositor multiplies these into every overlay's coverage for this mod.
+    /// absolute paths of the mask files that exist on disk, ordered by the group's option order so
+    /// that masks higher in the Penumbra list take priority where they overlap (highest first).
+    /// Empty when none are selected.
     /// </summary>
     public List<string> ResolveActiveMasks(OverlayEntry entry)
     {
@@ -170,14 +171,21 @@ public class SidecarDiscoveryService
         var selected = settings.Value.Options
             .FirstOrDefault(kv => string.Equals(kv.Key, MaskGroupName, StringComparison.OrdinalIgnoreCase))
             .Value;
+        if (selected is not { Count: > 0 }) return [];
 
-        return ResolveMaskPaths(entry.SidecarRoot, selected);
+        // Penumbra hands us the selected option names as a set; the authoritative top-to-bottom
+        // order lives in the mod's group JSON. The mod root is the parent of the Proteus sidecar.
+        var modRoot = Path.GetDirectoryName(
+            entry.SidecarRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        var order   = modRoot != null ? ReadMaskGroupOptionOrder(modRoot) : [];
+
+        return ResolveMaskPaths(entry.SidecarRoot, OrderByGroup(selected, order));
     }
 
     /// <summary>
     /// Pure mapping from selected mask-option names to existing <c>Masks/&lt;name&gt;.png</c> files
-    /// under <paramref name="sidecarRoot"/>. Skips options whose file is missing; dedupes
-    /// case-insensitively. Factored out so it can be unit-tested without the Penumbra IPC.
+    /// under <paramref name="sidecarRoot"/>, preserving the input order. Skips options whose file is
+    /// missing; dedupes case-insensitively. Factored out so it can be unit-tested without IPC.
     /// </summary>
     internal static List<string> ResolveMaskPaths(string sidecarRoot, IEnumerable<string>? selectedOptions)
     {
@@ -194,6 +202,54 @@ public class SidecarDiscoveryService
         }
         return result;
     }
+
+    /// <summary>
+    /// Reads the option-name order of the Penumbra group named <see cref="MaskGroupName"/> from the
+    /// mod's <c>group_*.json</c> files in <paramref name="modRoot"/>. Returns the names top-to-bottom
+    /// as shown in Penumbra, or an empty list if no such group file is found or it can't be parsed.
+    /// </summary>
+    internal static List<string> ReadMaskGroupOptionOrder(string modRoot)
+    {
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(modRoot, "group_*.json"))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(File.ReadAllText(file));
+                    var root = doc.RootElement;
+                    if (!root.TryGetProperty("Name", out var nameEl)
+                        || !string.Equals(nameEl.GetString(), MaskGroupName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (!root.TryGetProperty("Options", out var opts) || opts.ValueKind != JsonValueKind.Array)
+                        continue;
+
+                    var names = new List<string>();
+                    foreach (var o in opts.EnumerateArray())
+                        if (o.TryGetProperty("Name", out var on) && on.GetString() is { } s)
+                            names.Add(s);
+                    return names;
+                }
+                catch { /* skip a malformed group file, keep scanning */ }
+            }
+        }
+        catch { /* modRoot missing/unreadable */ }
+        return [];
+    }
+
+    /// <summary>
+    /// Orders <paramref name="selected"/> option names by their index in <paramref name="order"/>
+    /// (the group's display order, highest priority first). Names not present in <paramref name="order"/>
+    /// keep their relative position after all known ones. Stable.
+    /// </summary>
+    internal static List<string> OrderByGroup(IEnumerable<string> selected, List<string> order)
+        => selected
+            .OrderBy(s =>
+            {
+                int i = order.FindIndex(o => string.Equals(o, s, StringComparison.OrdinalIgnoreCase));
+                return i < 0 ? int.MaxValue : i;
+            })
+            .ToList();
 
     /// <summary>
     /// Returns the merged color table rows across all active options in all groups — the same
