@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using Glamourer.Api.Enums;
 using Newtonsoft.Json.Linq;
 using Proteus.Services;
 using Xunit;
@@ -42,6 +43,16 @@ public class DesignBindingTests
     {
         var design = Design(("Head", 1, true), ("Body", 2, true), ("Hands", 3, true));
         var state  = State(("Head", 1), ("Body", 2), ("Hands", 3), ("Legs", 99));
+        Assert.True(DesignBindingService.GearMatches(design, state));
+    }
+
+    [Fact]
+    public void GearMatches_WeaponSlotsAreIgnored()
+    {
+        // The applied design matches the outfit in every armor slot but the drawn weapon differs
+        // (job/gearset/sheathe state) — must still match, because MainHand/OffHand are excluded.
+        var design = Design(("MainHand", 8654, true), ("Head", 1, true), ("Body", 2, true), ("Hands", 3, true));
+        var state  = State(("MainHand", 16060), ("Head", 1), ("Body", 2), ("Hands", 3));
         Assert.True(DesignBindingService.GearMatches(design, state));
     }
 
@@ -95,6 +106,23 @@ public class DesignBindingTests
         Assert.False(DesignBindingService.GearMatches(new JObject(), State(("Head", 1))));
         Assert.False(DesignBindingService.GearMatches(Design(("Head", 1, true)), new JObject()));
     }
+
+    // ── IsApplySignal ────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(StateChangeType.Design)]
+    [InlineData(StateChangeType.Reapply)] // automation apply + revert surface here
+    [InlineData(StateChangeType.Reset)]   // manual revert
+    public void IsApplySignal_StateWideChanges_AreSignals(StateChangeType type)
+        => Assert.True(DesignBindingService.IsApplySignal(type));
+
+    [Theory]
+    [InlineData(StateChangeType.Equip)]
+    [InlineData(StateChangeType.Customize)]
+    [InlineData(StateChangeType.Stains)]
+    [InlineData(StateChangeType.MaterialValue)]
+    public void IsApplySignal_IndividualTweaks_AreNotSignals(StateChangeType type)
+        => Assert.False(DesignBindingService.IsApplySignal(type));
 
     // ── Store round-trip ───────────────────────────────────────────────────────
 

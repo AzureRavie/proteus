@@ -377,9 +377,15 @@ public class DesignBindingService : IDisposable
 
     // ── Heuristic apply detection (framework thread) ────────────────────────────
 
+    // Glamourer automation never delivers Design over IPC for the local player: a Fixed-source
+    // ApplyDesign carries no actors, so the heuristic only ever sees Reapply (automation apply and
+    // revert) — and Reset (manual revert). Mirror GlamourerBridge.OnStateChanged's state-wide set.
+    internal static bool IsApplySignal(StateChangeType type)
+        => type is StateChangeType.Design or StateChangeType.Reapply or StateChangeType.Reset;
+
     private void OnGlamourerStateChangedTyped(StateChangeType type)
     {
-        if (type != StateChangeType.Design) return;
+        if (!IsApplySignal(type)) return;
         if (Environment.TickCount64 < suppressUntilTick) return; // our own restore echo
 
         // Feature disabled → never restore. Also drop any override left active from before the
@@ -439,8 +445,15 @@ public class DesignBindingService : IDisposable
         return design;
     }
 
-    // A design matches the state when every equipment slot it applies has the same ItemId as the
-    // player's current state, and it applies a meaningful number of slots. Stains/meta are ignored.
+    // Weapon slots are excluded from the match: a character's drawn weapon changes with job,
+    // gearset, and sheathe state independently of the worn outfit, so requiring it to match would
+    // reject a correctly-applied design whenever the equipped weapon differs (the common case).
+    private static readonly HashSet<string> NonMatchedSlots =
+        new(StringComparer.OrdinalIgnoreCase) { "MainHand", "OffHand" };
+
+    // A design matches the state when every applied (non-weapon) equipment slot has the same ItemId
+    // as the player's current state, and it applies a meaningful number of slots. Weapons, stains,
+    // and meta entries are ignored.
     internal static bool GearMatches(JObject design, JObject state)
     {
         if (design["Equipment"] is not JObject dEquip || state["Equipment"] is not JObject sEquip)
@@ -449,6 +462,7 @@ public class DesignBindingService : IDisposable
         int applied = 0;
         foreach (var prop in dEquip.Properties())
         {
+            if (NonMatchedSlots.Contains(prop.Name)) continue;      // weapons vary situationally
             if (prop.Value is not JObject slot) continue;
             var itemTok = slot["ItemId"];
             if (itemTok == null) continue;                          // skip meta entries (Hat/Visor/Weapon/VieraEars)
