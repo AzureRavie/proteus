@@ -41,6 +41,9 @@ public class CompositorService : IDisposable
     // compositor uses these colors in place of each mod's metadata.json colors for the run; null
     // means "use metadata as authored". Reference assignment is atomic; read on the recomposite task.
     private volatile IReadOnlyDictionary<string, OverlayColorOverride>? _colorOverride;
+    // Snapshot of the player's active material game paths, captured on the main thread at trigger
+    // time so the background recomposite can filter without touching main-thread-only IPCs.
+    private volatile HashSet<string>? _activeMtrlSnapshot;
 
     public CompositorResult? LastResult { get; private set; }
     public List<OverlayEntry> LastDiscovered { get; private set; } = [];
@@ -224,6 +227,7 @@ public class CompositorService : IDisposable
         }
 
         log.Debug("[Proteus] Recomposite triggered: {0}", reason);
+        _activeMtrlSnapshot = penumbra.GetActivePlayerMaterialPaths();
         var token = cts.Token;
         Task.Run(async () =>
         {
@@ -317,6 +321,17 @@ public class CompositorService : IDisposable
                             byMaterial[mtrlPath] = list = new();
                         list.Add((entry, overlay));
                     }
+                }
+            }
+
+            // Drop materials the player doesn't currently have loaded — avoids compositing gear they aren't wearing.
+            var activeMtrl = _activeMtrlSnapshot;
+            if (activeMtrl != null)
+            {
+                foreach (var key in byMaterial.Keys.Where(k => !activeMtrl.Contains(k)).ToList())
+                {
+                    log.Debug("[Proteus] Skipping non-equipped material: {0}", key);
+                    byMaterial.Remove(key);
                 }
             }
 

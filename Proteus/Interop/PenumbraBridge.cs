@@ -27,6 +27,7 @@ public class PenumbraBridge : IDisposable
     private readonly TrySetModSettings trySetModSettings;
     private readonly RedrawObject redrawObject;
     private readonly OpenMainWindow openMainWindow;
+    private readonly GetGameObjectResourcePaths getGameObjectResourcePaths;
 
     private readonly EventSubscriber<ModSettingChange, Guid, string, bool> modSettingChangedSub;
     private readonly EventSubscriber<string> modAddedSub;
@@ -68,6 +69,7 @@ public class PenumbraBridge : IDisposable
         trySetModSettings = new TrySetModSettings(pluginInterface);
         redrawObject = new RedrawObject(pluginInterface);
         openMainWindow = new OpenMainWindow(pluginInterface);
+        getGameObjectResourcePaths = new GetGameObjectResourcePaths(pluginInterface);
 
         modSettingChangedSub = Penumbra.Api.IpcSubscribers.ModSettingChanged.Subscriber(pluginInterface,
             (change, collId, modDir, inherited) => ModSettingChanged?.Invoke(change, collId, modDir, inherited));
@@ -185,6 +187,28 @@ public class PenumbraBridge : IDisposable
             return string.IsNullOrEmpty(resolved) ? null : resolved;
         }
         catch (Exception ex) { log.Error(ex, "ResolvePlayerPath failed for {0}", gamePath); return null; }
+    }
+
+    /// <summary>
+    /// Returns the set of material game paths currently loaded by the local player's draw object,
+    /// or null when unavailable or the player is not in game.
+    /// </summary>
+    public HashSet<string>? GetActivePlayerMaterialPaths()
+    {
+        if (!IsAvailable) return null;
+        try
+        {
+            var results = getGameObjectResourcePaths.Invoke(0);
+            var dict = results[0];
+            if (dict == null) return null;
+            var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var gamePaths in dict.Values)
+                foreach (var p in gamePaths)
+                    if (p.EndsWith(".mtrl", StringComparison.OrdinalIgnoreCase))
+                        paths.Add(p);
+            return paths.Count > 0 ? paths : null;
+        }
+        catch (Exception ex) { log.Warning(ex, "GetGameObjectResourcePaths failed; compositing all materials"); return null; }
     }
 
     /// <summary>Register a new mod directory with Penumbra.</summary>
