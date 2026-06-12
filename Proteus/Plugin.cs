@@ -25,6 +25,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly GlamourerBridge glamourer;
     private readonly TextureLoader textureLoader;
     private readonly SidecarDiscoveryService discovery;
+    private readonly UVRemapService uvRemap;
     private readonly CompositorService compositor;
     private readonly DesignBindingService designBindings;
     private readonly GlamourerDesignWatcher designWatcher;
@@ -45,7 +46,8 @@ public sealed class Plugin : IDalamudPlugin
         glamourer = new GlamourerBridge(pluginInterface, ObjectTable, log);
         textureLoader = new TextureLoader(DataManager, log);
         discovery = new SidecarDiscoveryService(penumbra, log);
-        compositor = new CompositorService(penumbra, glamourer, discovery, textureLoader, config, log);
+        uvRemap = new UVRemapService(log, pluginInterface.AssemblyLocation.DirectoryName!);
+        compositor = new CompositorService(penumbra, glamourer, discovery, textureLoader, config, log, uvRemap);
         designBindings = new DesignBindingService(penumbra, glamourer, discovery, compositor, config, pluginInterface, framework, log);
         designWatcher = new GlamourerDesignWatcher(designBindings, config.GlamourerDesignDirOverride ?? glamourer.DesignsDirectory, log);
         ipcProvider = new IpcProvider(pluginInterface, compositor, discovery, log);

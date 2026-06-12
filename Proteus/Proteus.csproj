@@ -20,6 +20,13 @@
   <ItemGroup>
     <PackageReference Include="StbImageSharp" Version="2.*" />
     <PackageReference Include="StbImageWriteSharp" Version="1.16.7" />
+    <PackageReference Include="BitMiracle.LibTiff.NET" Version="2.4.660" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="uvmaps\*.tif">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>

@@ -2,6 +2,12 @@
   "version": 1,
   "dependencies": {
     "net10.0-windows7.0": {
+      "BitMiracle.LibTiff.NET": {
+        "type": "Direct",
+        "requested": "[2.4.660, )",
+        "resolved": "2.4.660",
+        "contentHash": "Drd0fDFVrR3v19IJtqiDVnjgcVZoGlzFw/CYni1OQ5/xVYvjPNp18E9eu+dH/RmpIUw6Pn/JhE/H+Yc3kHI89A=="
+      },
       "DalamudPackager": {
         "type": "Direct",
         "requested": "[15.0.0, )",
@@ -26,33 +32,8 @@
         "resolved": "1.16.7",
         "contentHash": "NF9kOxi0iS9VunklnRKgOpAWC2knCGKRjdy7RT6XAqYNyb7LQfyPHPdl4l1fJw7TFYKrGQzQOmK1XpBONC2MoA=="
       },
-      "BCnEncoder.Net": {
-        "type": "Transitive",
-        "resolved": "2.2.1",
-        "contentHash": "tI5+/OQo0kciLqWrViRjpOH+IL3FjexYnoWZajiGV41g/EM9CGbWsxsPzBDmpoxNkrV9uox/EtIhCIi9chBSFw==",
-        "dependencies": {
-          "CommunityToolkit.HighPerformance": "8.4.0"
-        }
-      },
-      "CommunityToolkit.HighPerformance": {
-        "type": "Transitive",
-        "resolved": "8.4.0",
-        "contentHash": "flxspiBs0G/0GMp7IK2J2ijV9bTG6hEwFc/z6ekHqB6nwRJ4Ry2yLdx+TkbCUYFCl4XhABkAwomeKbT6zM2Zlg=="
-      },
-      "Microsoft.Extensions.ObjectPool": {
-        "type": "Transitive",
-        "resolved": "10.0.0",
-        "contentHash": "bpeCq0IYmVLACyEUMzFIOQX+zZUElG1t+nu1lSxthe7B+1oNYking7b91305+jNB6iwojp9fqTY9O+Nh7ULQxg=="
-      },
       "glamourer.api": {
         "type": "Project"
-      },
-      "lumina": {
-        "type": "Project",
-        "dependencies": {
-          "BCnEncoder.Net": "[2.2.1, )",
-          "Microsoft.Extensions.ObjectPool": "[10.0.0, )"
-        }
       },
       "penumbra.api": {
         "type": "Project"

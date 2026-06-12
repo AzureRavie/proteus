@@ -29,6 +29,7 @@ public class CompositorService : IDisposable
     private readonly TextureLoader textureLoader;
     private readonly Configuration config;
     private readonly IPluginLog log;
+    private readonly UVRemapService uvRemap;
 
     private string modsRoot;
     private string managedModDir;
@@ -44,6 +45,9 @@ public class CompositorService : IDisposable
     // Snapshot of the player's active material game paths, captured on the main thread at trigger
     // time so the background recomposite can filter without touching main-thread-only IPCs.
     private volatile HashSet<string>? _activeMtrlSnapshot;
+    // Body type ("bibo"/"gen3"/"gen2") that the last completed Recomposite() actually composited for.
+    // Used by the post-redraw check to detect body-type switches and trigger a corrective composite.
+    private volatile string? _lastCompositedBodyType;
 
     public CompositorResult? LastResult { get; private set; }
     public List<OverlayEntry> LastDiscovered { get; private set; } = [];
@@ -55,7 +59,8 @@ public class CompositorService : IDisposable
         SidecarDiscoveryService discovery,
         TextureLoader textureLoader,
         Configuration config,
-        IPluginLog log)
+        IPluginLog log,
+        UVRemapService uvRemap)
     {
         this.penumbra  = penumbra;
         this.glamourer = glamourer;
@@ -63,6 +68,7 @@ public class CompositorService : IDisposable
         this.textureLoader = textureLoader;
         this.config = config;
         this.log = log;
+        this.uvRemap = uvRemap;
 
         modsRoot      = penumbra.GetModDirectory() ?? string.Empty;
         managedModDir = Path.Combine(modsRoot, SidecarDiscoveryService.ManagedModDir);
@@ -324,15 +330,85 @@ public class CompositorService : IDisposable
                 }
             }
 
-            // Drop materials the player doesn't currently have loaded — avoids compositing gear they aren't wearing.
+            // Drop materials the player doesn't currently have loaded.
+            // Equipment/accessory materials: filtered by exact path (authoritative).
+            // Body-type materials: the snapshot is captured before a body-type switch takes effect,
+            // so the new body's paths won't appear in the exact set yet. Strategy:
+            //   - Collect ALL body types present in the snapshot (there may be several: the character
+            //     can simultaneously have a bibo top body, vanilla leg body, etc.).
+            //   - If a body material's type IS in the snapshot but its exact path is not → filter
+            //     (the type is active for a different race/body code, not this one).
+            //   - If a body material's type is NOT in the snapshot at all → keep (mid-switch: the
+            //     new body type hasn't appeared yet; post-redraw check will clean up if needed).
             var activeMtrl = _activeMtrlSnapshot;
+            {
+                var activeBodyTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (activeMtrl != null)
+                    foreach (var m in activeMtrl)
+                    {
+                        var bt = UVRemapService.InferBodyType(m);
+                        if (bt != null) activeBodyTypes.Add(bt);
+                    }
+
+                _lastCompositedBodyType = activeBodyTypes.Count > 0
+                    ? string.Join(",", activeBodyTypes.OrderBy(x => x))
+                    : null;
+
+                if (activeMtrl != null)
+                {
+                    foreach (var key in byMaterial.Keys.Where(k => !activeMtrl.Contains(k)).ToList())
+                    {
+                        var keyBodyType = UVRemapService.InferBodyType(key);
+                        if (keyBodyType != null)
+                        {
+                            // Body type is known to be active (some path of that type IS loaded) but
+                            // this specific path isn't in the snapshot → wrong race/body code.
+                            if (activeBodyTypes.Contains(keyBodyType))
+                            {
+                                log.Debug("[Proteus] Skipping body material (active types={0}): {1}",
+                                    _lastCompositedBodyType ?? "none", key);
+                                byMaterial.Remove(key);
+                            }
+                            // else: body type absent from snapshot → keep (mid body-type switch)
+                        }
+                        else
+                        {
+                            log.Debug("[Proteus] Skipping non-equipped material: {0}", key);
+                            byMaterial.Remove(key);
+                        }
+                    }
+                }
+            }
+
+            // Sibling synthesis: bibo overlay entries are automatically applied to gen3/gen2
+            // body materials when those materials are active but have no direct overlay entries.
+            // This handles the common case — overlays are authored for bibo UV space, but the
+            // character equips a gen3 body. No metadata.json change required; UV remap fires
+            // automatically because the descriptor's MaterialGamePaths contain _bibo.mtrl.
             if (activeMtrl != null)
             {
-                foreach (var key in byMaterial.Keys.Where(k => !activeMtrl.Contains(k)).ToList())
+                var siblings = new Dictionary<string, List<(OverlayEntry, ResolvedOverlay)>>(StringComparer.OrdinalIgnoreCase);
+                foreach (var (biboPath, pairs) in byMaterial)
                 {
-                    log.Debug("[Proteus] Skipping non-equipped material: {0}", key);
-                    byMaterial.Remove(key);
+                    if (!biboPath.EndsWith("_bibo.mtrl", StringComparison.OrdinalIgnoreCase)) continue;
+                    var stem = biboPath[..^"_bibo.mtrl".Length];
+
+                    var gen3Path = stem + "_b.mtrl";
+                    if (activeMtrl.Contains(gen3Path) && !byMaterial.ContainsKey(gen3Path) && !siblings.ContainsKey(gen3Path))
+                    {
+                        log.Debug("[Proteus] Sibling synthesis: {0} → {1}", biboPath, gen3Path);
+                        siblings[gen3Path] = pairs;
+                    }
+
+                    var gen2Path = stem + "_a.mtrl";
+                    if (activeMtrl.Contains(gen2Path) && !byMaterial.ContainsKey(gen2Path) && !siblings.ContainsKey(gen2Path))
+                    {
+                        log.Debug("[Proteus] Sibling synthesis: {0} → {1}", biboPath, gen2Path);
+                        siblings[gen2Path] = pairs;
+                    }
                 }
+                foreach (var (path, pairs) in siblings)
+                    byMaterial[path] = pairs;
             }
 
             if (ct.IsCancellationRequested) return;
@@ -370,6 +446,15 @@ public class CompositorService : IDisposable
                 // TextureLoader caches decoded PNGs across runs (keyed by path + mtime),
                 // and its Lazy wrapper dedups concurrent requests for the same file.
                 byte[]? LoadPng(string path, int w, int h) => textureLoader.LoadPngAsRgba(path, w, h);
+
+                var dstBodyType = UVRemapService.InferBodyType(mtrlGamePath);
+                byte[]? RemapIfNeeded(byte[]? png, int w, int h, string? srcType)
+                {
+                    if (png == null || srcType == null || dstBodyType == null) return png;
+                    if (string.Equals(srcType, dstBodyType, StringComparison.OrdinalIgnoreCase)) return png;
+                    if (w != 4096 || h != 4096) return png;
+                    return uvRemap.Remap(png, w, h, srcType, dstBodyType);
+                }
 
                 // Combined coverage-mask for a mod's active masks at a given size, cached per run.
                 // A mask SETS coverage opacity explicitly within its alpha region: its grayscale RGB
@@ -451,7 +536,14 @@ public class CompositorService : IDisposable
                 {
                     if (ct.IsCancellationRequested) return;
 
-                    var desc   = resolved.Descriptor;
+                    var desc        = resolved.Descriptor;
+                    var srcBodyType = desc.SourceBodyType;
+                    // Infer bibo source when the overlay's material paths are _bibo.mtrl but
+                    // no explicit SourceBodyType is set — covers overlays authored before the
+                    // SourceBodyType field existed and sibling-synthesised gen3/gen2 entries.
+                    if (srcBodyType == null && desc.MaterialGamePaths.Any(p =>
+                            p.EndsWith("_bibo.mtrl", StringComparison.OrdinalIgnoreCase)))
+                        srcBodyType = "bibo";
                     var rows   = BuildRowDict(resolved.ColorTableRows);
                     rows.TryGetValue(15, out var row16);
                     var row16A = row16?.A ?? new ColorTableSubRow();
@@ -478,7 +570,7 @@ public class CompositorService : IDisposable
                         }
                         if (baseD.Length > 0)
                         {
-                            diffuseOv = LoadPng(Path.Combine(entry.SidecarRoot, desc.Diffuse), wD, hD);
+                            diffuseOv = RemapIfNeeded(LoadPng(Path.Combine(entry.SidecarRoot, desc.Diffuse), wD, hD), wD, hD, srcBodyType);
                             if (diffuseOv != null)
                             {
                                 // Apply per-row opacity to coverage before downstream compositing.
@@ -506,7 +598,7 @@ public class CompositorService : IDisposable
                                 for (int ai = 3; ai < baseN.Length; ai += 4) baseN[ai] = 0;
                         }
                         if (baseN.Length > 0)
-                            normalOv = LoadPng(Path.Combine(entry.SidecarRoot, desc.Normal), wN, hN);
+                            normalOv = RemapIfNeeded(LoadPng(Path.Combine(entry.SidecarRoot, desc.Normal), wN, hN), wN, hN, srcBodyType);
 
                         if (normalOv != null && covSrc == null)
                         {
@@ -543,7 +635,7 @@ public class CompositorService : IDisposable
                         }
                         if (baseM.Length > 0)
                         {
-                            var maskOv = LoadPng(Path.Combine(entry.SidecarRoot, desc.Mask), wM, hM);
+                            var maskOv = RemapIfNeeded(LoadPng(Path.Combine(entry.SidecarRoot, desc.Mask), wM, hM), wM, hM, srcBodyType);
                             if (maskOv != null)
                             {
                                 if (desc.Index == null && row16A.Opacity != 0)
@@ -716,7 +808,7 @@ public class CompositorService : IDisposable
                         }
                         if (baseM.Length > 0)
                         {
-                            var ov = LoadPng(Path.Combine(entry.SidecarRoot, desc.Mask), wM, hM);
+                            var ov = RemapIfNeeded(LoadPng(Path.Combine(entry.SidecarRoot, desc.Mask), wM, hM), wM, hM, srcBodyType);
                             if (ov != null) AlphaComposite(baseM, ov, wM, hM, CovAt(wM, hM));
                         }
                     }
@@ -944,6 +1036,47 @@ public class CompositorService : IDisposable
 
         Interlocked.Exchange(ref _lastOwnRedrawTick, Environment.TickCount64);
         penumbra.RedrawPlayer();
+        SchedulePostRedrawBodyTypeCheck();
+    }
+
+    // After a character redraw, check whether the active body type changed (e.g. user switched from
+    // bibo to gen3). The snapshot at trigger time reflects the PRE-redraw state, so the first
+    // composite may have used the wrong body type. If the post-redraw snapshot shows a different
+    // body type, fire one corrective recomposite. The second run captures a fresh snapshot, sets
+    // _lastCompositedBodyType to the new type, and the check then no-ops on its subsequent redraw.
+    private void SchedulePostRedrawBodyTypeCheck()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(600);
+                await Plugin.Framework.RunOnFrameworkThread(() =>
+                {
+                    var snapshot = penumbra.GetActivePlayerMaterialPaths();
+                    if (snapshot == null) return;
+
+                    var newBodyTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var m in snapshot)
+                    {
+                        var bt = UVRemapService.InferBodyType(m);
+                        if (bt != null) newBodyTypes.Add(bt);
+                    }
+                    var newBodyTypeKey = newBodyTypes.Count > 0
+                        ? string.Join(",", newBodyTypes.OrderBy(x => x))
+                        : null;
+
+                    if (newBodyTypeKey != null &&
+                        !string.Equals(newBodyTypeKey, _lastCompositedBodyType, StringComparison.OrdinalIgnoreCase))
+                    {
+                        log.Debug("[Proteus] Body types changed post-redraw ({0} → {1}) — re-compositing",
+                            _lastCompositedBodyType ?? "none", newBodyTypeKey);
+                        TriggerRecomposite("body-type-switch");
+                    }
+                });
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException) { }
+        });
     }
 
     // ── Compositing ──────────────────────────────────────────────────────────

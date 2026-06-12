@@ -86,6 +86,15 @@ public class OverlayDescriptor
     /// </summary>
     [JsonPropertyName("SkinToneMask")]
     public float? SkinToneMask { get; set; }
+
+    /// <summary>
+    /// UV space the overlay PNGs were painted for: "bibo", "gen3", or "gen2".
+    /// When set and different from the target material's body type (inferred from the
+    /// material path suffix), Proteus remaps overlay pixels before compositing.
+    /// Omit (null) when the overlay is already in the target body's UV space.
+    /// </summary>
+    [JsonPropertyName("SourceBodyType")]
+    public string? SourceBodyType { get; set; }
 }
 
 /// <summary>Maps one Penumbra option group to per-option overlay sets.</summary>
