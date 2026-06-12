@@ -56,4 +56,7 @@ For each sub-row:
 
 Changes are saved immediately to the mod's `metadata.json` and trigger a re-composite.
 
+### Acknowledgements
+Thank you so much to Sebby for teaching me about how to use pixel-based image mapping instead of baking and for releasing the baked maps under the MIT license via the loose texture compiler.
+
 ---
