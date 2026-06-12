@@ -452,15 +452,25 @@ public class CompositorService : IDisposable
                 {
                     if (png == null || srcType == null || dstBodyType == null) return png;
                     if (string.Equals(srcType, dstBodyType, StringComparison.OrdinalIgnoreCase)) return png;
-                    // Bibo→gen2: the right half of the 4096×4096 bibo texture is the vanilla UV content.
-                    // Load at native bibo resolution, crop right half (→ 2048×4096), resize to target.
-                    if (string.Equals(srcType, "bibo", StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(dstBodyType, "gen2", StringComparison.OrdinalIgnoreCase))
+                    // Any source → gen2 (vanilla): vanilla UV is the right half of bibo UV space.
+                    // Convert to bibo first (via transfer map if needed), crop right half, resize.
+                    if (string.Equals(dstBodyType, "gen2", StringComparison.OrdinalIgnoreCase))
                     {
                         if (overlayPath == null) return png;
                         var native = textureLoader.LoadPngAsRgba(overlayPath, 4096, 4096);
                         if (native == null) return png;
-                        var rightHalf = UVRemapService.CropRightHalf(native, 4096, 4096);
+                        byte[] biboSpace;
+                        if (string.Equals(srcType, "bibo", StringComparison.OrdinalIgnoreCase))
+                        {
+                            biboSpace = native;
+                        }
+                        else
+                        {
+                            var converted = uvRemap.Remap(native, 4096, 4096, srcType, "bibo");
+                            if (ReferenceEquals(converted, native)) return png; // map not found — skip
+                            biboSpace = converted;
+                        }
+                        var rightHalf = UVRemapService.CropRightHalf(biboSpace, 4096, 4096);
                         return UVRemapService.ResizeBilinear(rightHalf, 2048, 4096, w, h);
                     }
                     // Transfer-map paths always output at map resolution (4096×4096).
