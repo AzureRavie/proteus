@@ -448,10 +448,22 @@ public class CompositorService : IDisposable
                 byte[]? LoadPng(string path, int w, int h) => textureLoader.LoadPngAsRgba(path, w, h);
 
                 var dstBodyType = UVRemapService.InferBodyType(mtrlGamePath);
-                byte[]? RemapIfNeeded(byte[]? png, int w, int h, string? srcType)
+                byte[]? RemapIfNeeded(byte[]? png, int w, int h, string? srcType, string? overlayPath = null)
                 {
                     if (png == null || srcType == null || dstBodyType == null) return png;
                     if (string.Equals(srcType, dstBodyType, StringComparison.OrdinalIgnoreCase)) return png;
+                    // Bibo→gen2: the right half of the 4096×4096 bibo texture is the vanilla UV content.
+                    // Load at native bibo resolution, crop right half (→ 2048×4096), resize to target.
+                    if (string.Equals(srcType, "bibo", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(dstBodyType, "gen2", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (overlayPath == null) return png;
+                        var native = textureLoader.LoadPngAsRgba(overlayPath, 4096, 4096);
+                        if (native == null) return png;
+                        var rightHalf = UVRemapService.CropRightHalf(native, 4096, 4096);
+                        return UVRemapService.ResizeBilinear(rightHalf, 2048, 4096, w, h);
+                    }
+                    // Transfer-map paths always output at map resolution (4096×4096).
                     if (w != 4096 || h != 4096) return png;
                     return uvRemap.Remap(png, w, h, srcType, dstBodyType);
                 }
@@ -570,7 +582,8 @@ public class CompositorService : IDisposable
                         }
                         if (baseD.Length > 0)
                         {
-                            diffuseOv = RemapIfNeeded(LoadPng(Path.Combine(entry.SidecarRoot, desc.Diffuse), wD, hD), wD, hD, srcBodyType);
+                            var diffPath = Path.Combine(entry.SidecarRoot, desc.Diffuse);
+                            diffuseOv = RemapIfNeeded(LoadPng(diffPath, wD, hD), wD, hD, srcBodyType, diffPath);
                             if (diffuseOv != null)
                             {
                                 // Apply per-row opacity to coverage before downstream compositing.
@@ -598,7 +611,10 @@ public class CompositorService : IDisposable
                                 for (int ai = 3; ai < baseN.Length; ai += 4) baseN[ai] = 0;
                         }
                         if (baseN.Length > 0)
-                            normalOv = RemapIfNeeded(LoadPng(Path.Combine(entry.SidecarRoot, desc.Normal), wN, hN), wN, hN, srcBodyType);
+                        {
+                            var normPath = Path.Combine(entry.SidecarRoot, desc.Normal);
+                            normalOv = RemapIfNeeded(LoadPng(normPath, wN, hN), wN, hN, srcBodyType, normPath);
+                        }
 
                         if (normalOv != null && covSrc == null)
                         {
@@ -635,7 +651,8 @@ public class CompositorService : IDisposable
                         }
                         if (baseM.Length > 0)
                         {
-                            var maskOv = RemapIfNeeded(LoadPng(Path.Combine(entry.SidecarRoot, desc.Mask), wM, hM), wM, hM, srcBodyType);
+                            var maskPath3 = Path.Combine(entry.SidecarRoot, desc.Mask);
+                            var maskOv = RemapIfNeeded(LoadPng(maskPath3, wM, hM), wM, hM, srcBodyType, maskPath3);
                             if (maskOv != null)
                             {
                                 if (desc.Index == null && row16A.Opacity != 0)
@@ -808,7 +825,8 @@ public class CompositorService : IDisposable
                         }
                         if (baseM.Length > 0)
                         {
-                            var ov = RemapIfNeeded(LoadPng(Path.Combine(entry.SidecarRoot, desc.Mask), wM, hM), wM, hM, srcBodyType);
+                            var maskPathD = Path.Combine(entry.SidecarRoot, desc.Mask);
+                            var ov = RemapIfNeeded(LoadPng(maskPathD, wM, hM), wM, hM, srcBodyType, maskPathD);
                             if (ov != null) AlphaComposite(baseM, ov, wM, hM, CovAt(wM, hM));
                         }
                     }

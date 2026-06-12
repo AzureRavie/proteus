@@ -62,6 +62,19 @@ public class UVRemapService
         return ApplyRemap(srcRgba, srcW, srcH, map);
     }
 
+    /// <summary>
+    /// Returns the right half (x = w/2 .. w-1) of a 4-channel RGBA image as a (w/2 × h) buffer.
+    /// Used for bibo→gen2: the right half of a 4096×4096 bibo overlay is in vanilla UV space.
+    /// </summary>
+    public static byte[] CropRightHalf(byte[] src, int srcW, int srcH)
+    {
+        int halfW = srcW / 2;
+        var dst = new byte[halfW * srcH * 4];
+        for (int y = 0; y < srcH; y++)
+            Array.Copy(src, (y * srcW + halfW) * 4, dst, y * halfW * 4, halfW * 4);
+        return dst;
+    }
+
     // ── Map cache ────────────────────────────────────────────────────────────
 
     private TransferMap? GetMap(string from, string to)
@@ -172,6 +185,39 @@ public class UVRemapService
             }
         }
 
+        return dst;
+    }
+
+    public static byte[] ResizeBilinear(byte[] src, int srcW, int srcH, int dstW, int dstH)
+    {
+        if (srcW == dstW && srcH == dstH) return src;
+        var dst = new byte[dstW * dstH * 4];
+        float xScale = (float)srcW / dstW;
+        float yScale = (float)srcH / dstH;
+        for (int dy = 0; dy < dstH; dy++)
+        {
+            for (int dx = 0; dx < dstW; dx++)
+            {
+                float srcXf = Math.Clamp((dx + 0.5f) * xScale - 0.5f, 0, srcW - 1);
+                float srcYf = Math.Clamp((dy + 0.5f) * yScale - 0.5f, 0, srcH - 1);
+                int x1 = (int)srcXf, y1 = (int)srcYf;
+                int x2 = Math.Min(x1 + 1, srcW - 1), y2 = Math.Min(y1 + 1, srcH - 1);
+                float xf = srcXf - x1, yf = srcYf - y1;
+                int dstOff = (dy * dstW + dx) * 4;
+                for (int c = 0; c < 4; c++)
+                {
+                    float topLeft     = src[(y1 * srcW + x1) * 4 + c];
+                    float topRight    = src[(y1 * srcW + x2) * 4 + c];
+                    float bottomLeft  = src[(y2 * srcW + x1) * 4 + c];
+                    float bottomRight = src[(y2 * srcW + x2) * 4 + c];
+                    dst[dstOff + c] = (byte)(topLeft     * (1 - xf) * (1 - yf)
+                                           + topRight    * xf       * (1 - yf)
+                                           + bottomLeft  * (1 - xf) * yf
+                                           + bottomRight * xf       * yf
+                                           + 0.5f);
+                }
+            }
+        }
         return dst;
     }
 }
