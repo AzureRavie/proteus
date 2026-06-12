@@ -601,7 +601,8 @@ public class CompositorService : IDisposable
                                 // Flat: apply row 16A's opacity uniformly across the whole overlay.
                                 if (desc.Index != null && rows.Values.Any(r => r.A.Opacity != 0 || r.B.Opacity != 0))
                                 {
-                                    var idD = LoadPng(Path.Combine(entry.SidecarRoot, desc.Index), wD, hD);
+                                    var idxPath = Path.Combine(entry.SidecarRoot, desc.Index);
+                                    var idD = RemapIfNeeded(LoadPng(idxPath, wD, hD), wD, hD, srcBodyType, idxPath);
                                     if (idD != null) diffuseOv = ApplyIndexedOpacity(diffuseOv, idD, rows);
                                 }
                                 else if (desc.Index == null && row16A.Opacity != 0)
@@ -637,7 +638,8 @@ public class CompositorService : IDisposable
                             }
                             if (desc.Index != null && rows.Values.Any(r => r.A.Opacity != 0 || r.B.Opacity != 0))
                             {
-                                var idN = LoadPng(Path.Combine(entry.SidecarRoot, desc.Index), wN, hN);
+                                var idxPath = Path.Combine(entry.SidecarRoot, desc.Index);
+                                var idN = RemapIfNeeded(LoadPng(idxPath, wN, hN), wN, hN, srcBodyType, idxPath);
                                 if (idN != null) synth = ApplyIndexedOpacity(synth, idN, rows);
                             }
                             else if (desc.Index == null && row16A.Opacity != 0)
@@ -721,7 +723,8 @@ public class CompositorService : IDisposable
                     {
                         if (desc.Index != null)
                         {
-                            var idD = LoadPng(Path.Combine(entry.SidecarRoot, desc.Index), wD, hD);
+                            var idxPath = Path.Combine(entry.SidecarRoot, desc.Index);
+                            var idD = RemapIfNeeded(LoadPng(idxPath, wD, hD), wD, hD, srcBodyType, idxPath);
                             if (idD != null) ApplyIndexedOverlay(baseD, diffuseOv, idD, rows, false, wD, hD);
                             else             ApplyFlatOverlay(baseD, diffuseOv, row16A, wD, hD);
                         }
@@ -810,7 +813,8 @@ public class CompositorService : IDisposable
                                     // Index texture maps each pixel to a color table row.
                                     // Write configured emissive for that row to normal alpha.
                                     // Pixels outside the overlay have R=0 → unmapped → stay at 0.
-                                    var idN = LoadPng(Path.Combine(entry.SidecarRoot, desc.Index), wN, hN);
+                                    var idxPath = Path.Combine(entry.SidecarRoot, desc.Index);
+                                    var idN = RemapIfNeeded(LoadPng(idxPath, wN, hN), wN, hN, srcBodyType, idxPath);
                                     var emMask = CovAt(wN, hN);
                                     if (idN != null && emMask != null) ApplyIndexedEmissive(baseN, idN, emMask, rows, wN, hN);
                                 }
