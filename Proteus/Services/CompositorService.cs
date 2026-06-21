@@ -243,12 +243,17 @@ public class CompositorService : IDisposable
         }
 
         log.Debug("[Proteus] Recomposite triggered: {0}", reason);
-        _activeMtrlSnapshot = penumbra.GetActivePlayerMaterialPaths();
         var token = cts.Token;
         Task.Run(async () =>
         {
             try { await Task.Delay(200, token); }
             catch (OperationCanceledException) { return; }
+            // GetActivePlayerMaterialPaths reads Dalamud's ObjectTable via Penumbra IPC,
+            // which is only valid on the game's main thread. Mod events fire on a background
+            // thread, so capture the snapshot on the framework thread before compositing.
+            try { _activeMtrlSnapshot = await Plugin.Framework.RunOnFrameworkThread(penumbra.GetActivePlayerMaterialPaths); }
+            catch (OperationCanceledException) { return; }
+            if (token.IsCancellationRequested) return;
             Recomposite(token);
         });
     }
