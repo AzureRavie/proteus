@@ -23,6 +23,9 @@ public class StatusWindow : Window
     // Accent used to flag an active design binding (and the mods/colors it drives).
     private static readonly Vector4 BindingAccent = new(0.45f, 0.75f, 1f, 1f);
 
+    // Indexed by (int)SiblingSynthesisMode: Off=0, BiboGen3Only=1, AllBodies=2.
+    private static readonly string[] SiblingModeLabels = { "Off", "bibo+gen3", "All bodies" };
+
     // Key: absolute index-texture path → 1-based row numbers that appear in it.
     // Cleared per-entry on each popup open so option switches are reflected.
     private readonly Dictionary<string, HashSet<int>> _indexRowCache = new();
@@ -110,11 +113,12 @@ public class StatusWindow : Window
         }
         else
         {
-            ImGui.BeginTable("##mods", 5, ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.BordersInnerV);
+            ImGui.BeginTable("##mods", 6, ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.BordersInnerV);
             ImGui.TableSetupColumn("##en",     ImGuiTableColumnFlags.WidthFixed, 20);
             ImGui.TableSetupColumn("Mod",      ImGuiTableColumnFlags.WidthStretch);
             ImGui.TableSetupColumn("Pri",      ImGuiTableColumnFlags.WidthFixed, 60);
             ImGui.TableSetupColumn("Colors",   ImGuiTableColumnFlags.WidthFixed, 60);
+            ImGui.TableSetupColumn("Bodies",   ImGuiTableColumnFlags.WidthFixed, 110);
             ImGui.TableSetupColumn("Overlays", ImGuiTableColumnFlags.WidthFixed, 70);
             ImGui.TableHeadersRow();
 
@@ -182,6 +186,29 @@ public class StatusWindow : Window
                     DrawColorEditor(entry);
                     ImGui.EndPopup();
                 }
+
+                // Sibling-synthesis mode (which body types to generate for this mod).
+                ImGui.TableNextColumn();
+                var mode = config.SiblingModeFor(entry.ModDirectory);
+                ImGui.SetNextItemWidth(105);
+                if (ImGui.BeginCombo($"##bodies_{entry.ModDirectory}", SiblingModeLabels[(int)mode]))
+                {
+                    foreach (var opt in new[] { SiblingSynthesisMode.AllBodies, SiblingSynthesisMode.BiboGen3Only, SiblingSynthesisMode.Off })
+                    {
+                        if (ImGui.Selectable(SiblingModeLabels[(int)opt], opt == mode) && opt != mode)
+                        {
+                            config.SiblingSynthesis[entry.ModDirectory] = opt;
+                            config.Save();
+                            compositor.TriggerRecomposite("sibling-mode");
+                        }
+                    }
+                    ImGui.EndCombo();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Which body types to synthesize for this mod:\n" +
+                        "All bodies = sibling body (bibo↔gen3/Eve) + vanilla (gen2)\n" +
+                        "bibo+gen3 = bake to the sibling body only (default)\n" +
+                        "Off = no synthesis");
 
                 // Overlay count
                 ImGui.TableNextColumn();

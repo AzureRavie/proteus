@@ -31,6 +31,16 @@ public class CompositorService : IDisposable
     private readonly IPluginLog log;
     private readonly UVRemapService uvRemap;
 
+    // Body-UV material suffixes (shared stem) and their UV body type, used by sibling
+    // synthesis. _b/_a are body-UV only under /obj/body/, which InferBodyType enforces.
+    private static readonly (string Suffix, string BodyType)[] BodySuffixes =
+    {
+        ("_bibo.mtrl", "bibo"),
+        ("_b.mtrl",    "gen3"),
+        ("_eve.mtrl",  "gen3"),
+        ("_a.mtrl",    "gen2"),
+    };
+
     private string modsRoot;
     private string managedModDir;
 
@@ -380,31 +390,40 @@ public class CompositorService : IDisposable
                 }
             }
 
-            // Sibling synthesis: bibo overlay entries are automatically applied to gen3/gen2
-            // body materials when those materials are active but have no direct overlay entries.
-            // This handles the common case — overlays are authored for bibo UV space, but the
-            // character equips a gen3 body. No metadata.json change required; UV remap fires
-            // automatically because the descriptor's MaterialGamePaths contain _bibo.mtrl.
+            // Sibling synthesis: a mod's overlay entries are automatically applied to the other
+            // body-type materials the character currently has loaded, when those materials have no
+            // direct overlay entries. This handles the common case — overlays are authored for one
+            // UV space (e.g. bibo), but the character equips a different body (gen3, Eve, vanilla).
+            // No metadata.json change required; UV remap fires automatically from the descriptor's
+            // source body type. The cross-UV bake (bibo↔gen3/Eve) runs for any mode except Off;
+            // vanilla (gen2) is opt-in per mod (All bodies only). gen2 is never a source (vanilla
+            // is a terminal target and has no outbound transfer maps).
             if (activeMtrl != null)
             {
                 var siblings = new Dictionary<string, List<(OverlayEntry, ResolvedOverlay)>>(StringComparer.OrdinalIgnoreCase);
-                foreach (var (biboPath, pairs) in byMaterial)
+                foreach (var (srcPath, pairs) in byMaterial)
                 {
-                    if (!biboPath.EndsWith("_bibo.mtrl", StringComparison.OrdinalIgnoreCase)) continue;
-                    var stem = biboPath[..^"_bibo.mtrl".Length];
+                    var srcType = UVRemapService.InferBodyType(srcPath);
+                    if (srcType is null or "gen2") continue;
 
-                    var gen3Path = stem + "_b.mtrl";
-                    if (activeMtrl.Contains(gen3Path) && !byMaterial.ContainsKey(gen3Path) && !siblings.ContainsKey(gen3Path))
-                    {
-                        log.Debug("[Proteus] Sibling synthesis: {0} → {1}", biboPath, gen3Path);
-                        siblings[gen3Path] = pairs;
-                    }
+                    var srcSuffix = BodySuffixes.First(s => srcPath.EndsWith(s.Suffix, StringComparison.OrdinalIgnoreCase)).Suffix;
+                    var stem = srcPath[..^srcSuffix.Length];
 
-                    var gen2Path = stem + "_a.mtrl";
-                    if (activeMtrl.Contains(gen2Path) && !byMaterial.ContainsKey(gen2Path) && !siblings.ContainsKey(gen2Path))
+                    foreach (var (suffix, bodyType) in BodySuffixes)
                     {
-                        log.Debug("[Proteus] Sibling synthesis: {0} → {1}", biboPath, gen2Path);
-                        siblings[gen2Path] = pairs;
+                        if (suffix == srcSuffix) continue;
+                        var dstPath = stem + suffix;
+                        if (!activeMtrl.Contains(dstPath) || byMaterial.ContainsKey(dstPath) || siblings.ContainsKey(dstPath))
+                            continue;
+
+                        bool vanilla = bodyType == "gen2";
+                        var dstPairs = pairs.Where(p => vanilla
+                            ? config.SiblingModeFor(p.Entry.ModDirectory) == SiblingSynthesisMode.AllBodies
+                            : config.SiblingModeFor(p.Entry.ModDirectory) != SiblingSynthesisMode.Off).ToList();
+                        if (dstPairs.Count == 0) continue;
+
+                        log.Debug("[Proteus] Sibling synthesis{0}: {1} → {2}", vanilla ? " (vanilla)" : "", srcPath, dstPath);
+                        siblings[dstPath] = dstPairs;
                     }
                 }
                 foreach (var (path, pairs) in siblings)
@@ -560,12 +579,17 @@ public class CompositorService : IDisposable
 
                     var desc        = resolved.Descriptor;
                     var srcBodyType = desc.SourceBodyType;
-                    // Infer bibo source when the overlay's material paths are _bibo.mtrl but
-                    // no explicit SourceBodyType is set — covers overlays authored before the
-                    // SourceBodyType field existed and sibling-synthesised gen3/gen2 entries.
-                    if (srcBodyType == null && desc.MaterialGamePaths.Any(p =>
-                            p.EndsWith("_bibo.mtrl", StringComparison.OrdinalIgnoreCase)))
-                        srcBodyType = "bibo";
+                    // Infer the source UV space from the overlay's material paths when no explicit
+                    // SourceBodyType is set — covers overlays authored before the SourceBodyType
+                    // field existed and sibling-synthesised entries. gen3 covers both _b (body) and
+                    // _eve (Eve, same UV as gen3); needed so cross-UV bakes from those sources remap.
+                    if (srcBodyType == null)
+                    {
+                        if (desc.MaterialGamePaths.Any(p => p.EndsWith("_bibo.mtrl", StringComparison.OrdinalIgnoreCase)))
+                            srcBodyType = "bibo";
+                        else if (desc.MaterialGamePaths.Any(p => UVRemapService.InferBodyType(p) == "gen3"))
+                            srcBodyType = "gen3";
+                    }
                     var rows   = BuildRowDict(resolved.ColorTableRows);
                     rows.TryGetValue(15, out var row16);
                     var row16A = row16?.A ?? new ColorTableSubRow();

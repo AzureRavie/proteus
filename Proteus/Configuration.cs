@@ -1,8 +1,20 @@
 using System;
+using System.Collections.Generic;
 using Dalamud.Configuration;
 using Dalamud.Plugin;
 
 namespace Proteus;
+
+/// <summary>Which sibling body materials Proteus synthesizes for a mod's overlays.</summary>
+public enum SiblingSynthesisMode
+{
+    /// <summary>No sibling synthesis at all (neither gen3 nor vanilla).</summary>
+    Off = 0,
+    /// <summary>gen3 (_b.mtrl) and bibo (_bibo) bake only — the legacy default; no vanilla.</summary>
+    BiboGen3Only = 1,
+    /// <summary>gen3 (_b.mtrl), bibo (_bibo.mtrl) bake plus vanilla (gen2 _a.mtrl) generation.</summary>
+    AllBodies = 2,
+}
 
 [Serializable]
 public class Configuration : IPluginConfiguration
@@ -29,6 +41,14 @@ public class Configuration : IPluginConfiguration
 
     /// <summary>Optional explicit path to Glamourer's designs directory; null = derive from the config dir.</summary>
     public string? GlamourerDesignDirOverride { get; set; } = null;
+
+    /// <summary>Per-mod sibling-synthesis mode, keyed by Penumbra mod directory.
+    /// Absent = BiboGen3Only (default, = legacy behavior: gen3 bake, no vanilla).</summary>
+    public Dictionary<string, SiblingSynthesisMode> SiblingSynthesis { get; set; } = new();
+
+    /// <summary>Sibling-synthesis mode for a mod, applying the absent-default.</summary>
+    public SiblingSynthesisMode SiblingModeFor(string modDir) =>
+        SiblingSynthesis.TryGetValue(modDir, out var m) ? m : SiblingSynthesisMode.BiboGen3Only;
 
     public void Initialize(IDalamudPluginInterface pluginInterface)
         => pluginInterface.SavePluginConfig(this);
