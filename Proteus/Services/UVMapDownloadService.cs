@@ -91,26 +91,28 @@ public class UVMapDownloadService : IDisposable
                     return;
                 }
 
-                await using var src  = await response.Content.ReadAsStreamAsync(cts.Token);
-                await using var dst  = File.Create(tmp);
-
-                var buf = new byte[1024 * 1024]; // 1 MB buffer
                 long fileBytes = 0;
-                long nextReport = 5L * 1024 * 1024;
-                int read;
 
-                while ((read = await src.ReadAsync(buf, cts.Token)) > 0)
+                await using (var src = await response.Content.ReadAsStreamAsync(cts.Token))
+                await using (var dst = File.Create(tmp))
                 {
-                    await dst.WriteAsync(buf.AsMemory(0, read), cts.Token);
-                    fileBytes       += read;
-                    totalDownloaded += read;
+                    var buf = new byte[1024 * 1024]; // 1 MB buffer
+                    long nextReport = 5L * 1024 * 1024;
+                    int read;
 
-                    if (totalDownloaded >= nextReport)
+                    while ((read = await src.ReadAsync(buf, cts.Token)) > 0)
                     {
-                        var mb    = totalDownloaded / (1024 * 1024);
-                        var total = totalExpected   / (1024 * 1024);
-                        StatusMessage = $"Downloading UV maps... ({mb} MB / {total} MB)";
-                        nextReport += 5L * 1024 * 1024;
+                        await dst.WriteAsync(buf.AsMemory(0, read), cts.Token);
+                        fileBytes       += read;
+                        totalDownloaded += read;
+
+                        if (totalDownloaded >= nextReport)
+                        {
+                            var mb    = totalDownloaded / (1024 * 1024);
+                            var total = totalExpected   / (1024 * 1024);
+                            StatusMessage = $"Downloading UV maps... ({mb} MB / {total} MB)";
+                            nextReport += 5L * 1024 * 1024;
+                        }
                     }
                 }
 
