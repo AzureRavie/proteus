@@ -47,6 +47,7 @@ public class CompositorService : IDisposable
     private CancellationTokenSource? currentCts;
     private readonly object triggerLock = new();
     private long _lastOwnRedrawTick = 0; // TickCount64 when we last called RedrawPlayer()
+    private long _lastOwnReapplyTick = 0; // TickCount64 when we last called Glamourer ReapplyState()
 
     // Non-persistent per-mod color override pushed by the design-binding system. When set, the
     // compositor uses these colors in place of each mod's metadata.json colors for the run; null
@@ -238,6 +239,11 @@ public class CompositorService : IDisposable
 
     private void OnGlamourerStateChanged()
     {
+        // Suppress the echo from our own ReapplyState call: ReapplyPlayerState fires Glamourer's
+        // StateChanged(Reapply), which lands here. Ignore events within a short window of our call.
+        var msSinceReapply = unchecked(Environment.TickCount64 - Interlocked.Read(ref _lastOwnReapplyTick));
+        if (msSinceReapply >= 0 && msSinceReapply < 250) return;
+
         // Glamourer applied a design / reset / reapplied state on the local player.
         // Diff the discovered set against the last known set — only recomposite if something changed.
         var current = discovery.DiscoverAll();
@@ -1170,11 +1176,45 @@ public class CompositorService : IDisposable
         log.Debug("[Proteus] ReloadMod -> {0}", ec);
         if (redraw && !config.DisableAutoRedraw)
         {
-            // Give Penumbra's async reload time to process before the redraw re-requests textures.
+            // Give Penumbra's async reload time to process before the refresh re-requests textures.
             Thread.Sleep(300);
-            Interlocked.Exchange(ref _lastOwnRedrawTick, Environment.TickCount64);
-            penumbra.RedrawPlayer();
+            RefreshPlayerTextures();
         }
+    }
+
+    // Force the game to reload the (just-recomposited) player textures. Prefers Glamourer's in-place
+    // equipment reload (ReapplyState) to avoid the full despawn/respawn flicker; falls back to a
+    // Penumbra full redraw when in-place reload is disabled or Glamourer can't service it.
+    private void RefreshPlayerTextures()
+    {
+        if (config.UseInPlaceReload)
+        {
+            Interlocked.Exchange(ref _lastOwnReapplyTick, Environment.TickCount64);
+            // ReapplyState mutates game objects (loads weapons, flags slots) synchronously on the
+            // calling thread, so it MUST run on the framework thread — calling it from the background
+            // recomposite thread causes a native access violation. (Penumbra's RedrawObject, by
+            // contrast, queues internally and is safe to call from any thread.)
+            bool reapplied;
+            try
+            {
+                reapplied = Plugin.Framework.RunOnFrameworkThread(glamourer.ReapplyPlayerState)
+                    .GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                log.Warning("[Proteus] In-place reload failed on framework thread: {0}", ex.Message);
+                reapplied = false;
+            }
+
+            if (reapplied)
+            {
+                log.Debug("[Proteus] Refreshed textures via Glamourer in-place reload.");
+                return;
+            }
+        }
+
+        Interlocked.Exchange(ref _lastOwnRedrawTick, Environment.TickCount64);
+        penumbra.RedrawPlayer();
     }
 
     // Reload the managed mod, then redraw — but instead of sleeping a fixed, conservative
@@ -1212,8 +1252,7 @@ public class CompositorService : IDisposable
             Thread.Sleep(300); // no texture probe (mtrl-only redirects) — fall back to fixed wait
         }
 
-        Interlocked.Exchange(ref _lastOwnRedrawTick, Environment.TickCount64);
-        penumbra.RedrawPlayer();
+        RefreshPlayerTextures();
         SchedulePostRedrawBodyTypeCheck();
     }
 

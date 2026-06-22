@@ -20,6 +20,7 @@ public class GlamourerBridge : IDisposable
     private readonly GetDesignList getDesignList;
     private readonly GetDesignJObject getDesignJObject;
     private readonly GetState getState;
+    private readonly ReapplyState reapplyState;
 
     public bool IsAvailable { get; private set; }
 
@@ -50,6 +51,7 @@ public class GlamourerBridge : IDisposable
         getDesignList    = new GetDesignList(pluginInterface);
         getDesignJObject = new GetDesignJObject(pluginInterface);
         getState         = new GetState(pluginInterface);
+        reapplyState     = new ReapplyState(pluginInterface);
 
         try
         {
@@ -103,6 +105,35 @@ public class GlamourerBridge : IDisposable
             return ec == GlamourerApiEc.Success ? data : null;
         }
         catch (Exception ex) { log.Warning("[Proteus] GetState failed: {0}", ex.Message); return null; }
+    }
+
+    /// <summary>
+    /// Reapply the local player's Glamourer state piecewise (Equipment only), reloading each
+    /// equipment slot — including the body slot that carries the skin material — in place via the
+    /// game's FlagSlotForUpdate path, without a full despawn/respawn redraw. Returns true only on
+    /// success; false (actor not found / no state / unavailable / error) signals the caller to fall
+    /// back to a Penumbra redraw.
+    /// </summary>
+    public bool ReapplyPlayerState()
+    {
+        if (!IsAvailable) return false;
+        try
+        {
+            // Equipment only: omit Customization (avoids Glamourer's customize-redraw path) and
+            // Once/Lock (we don't want to fix or lock state, just trigger the in-place reload).
+            var ec = reapplyState.Invoke(0, 0, ApplyFlag.Equipment);
+            if (ec != GlamourerApiEc.Success)
+            {
+                log.Debug("[Proteus] ReapplyState -> {0} (falling back to redraw)", ec);
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            log.Warning("[Proteus] ReapplyState failed: {0}", ex.Message);
+            return false;
+        }
     }
 
     private void OnStateChanged(nint address, StateChangeType changeType)

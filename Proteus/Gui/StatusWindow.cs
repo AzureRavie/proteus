@@ -97,6 +97,18 @@ public class StatusWindow : Window
             config.Save();
         }
 
+        ImGui.SameLine();
+        var inPlaceReload = config.UseInPlaceReload;
+        if (ImGui.Checkbox("In-place reload", ref inPlaceReload))
+        {
+            config.UseInPlaceReload = inPlaceReload;
+            config.Save();
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Refresh textures via Glamourer's in-place equipment reload instead of a full\n" +
+                "redraw, avoiding the despawn/respawn flicker. Falls back to a full redraw\n" +
+                "automatically when Glamourer can't service it.");
+
         if (!penumbra.IsAvailable)
         {
             ImGui.SameLine();

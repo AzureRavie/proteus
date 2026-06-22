@@ -25,6 +25,13 @@ public class Configuration : IPluginConfiguration
 
     public bool DisableAutoRedraw { get; set; } = false;
 
+    /// <summary>
+    /// Prefer Glamourer's in-place equipment reload (ReapplyState) over a full Penumbra redraw when
+    /// refreshing composited textures. Avoids the despawn/respawn flicker. Falls back to a full
+    /// redraw automatically when Glamourer is unavailable or has no state for the player.
+    /// </summary>
+    public bool UseInPlaceReload { get; set; } = true;
+
     public int ManagedModPriority { get; set; } = 999;
 
     /// <summary>
