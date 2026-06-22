@@ -104,6 +104,9 @@ public class PenumbraBridge : IDisposable
     private void OnGameObjectRedrawn(nint _, int objectTableIndex)
     {
         if (objectTableIndex != 0) return; // local player only
+
+        LocalPlayerRedrawn?.Invoke();
+
         var current = GetPlayerCollectionId();
         if (current == null) return;
         if (_lastPlayerCollection == current) return;
@@ -111,8 +114,6 @@ public class PenumbraBridge : IDisposable
         bool first = _lastPlayerCollection == null;
         _lastPlayerCollection = current;
         if (!first) PlayerCollectionChanged?.Invoke();
-
-        LocalPlayerRedrawn?.Invoke();
     }
 
     private void CheckAvailability()

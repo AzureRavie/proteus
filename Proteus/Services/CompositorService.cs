@@ -179,9 +179,14 @@ public class CompositorService : IDisposable
     // Called on the framework thread by PenumbraBridge whenever the local player's draw object is
     // redrawn. Material paths only change when the draw object is recreated, so this is the only
     // point where the snapshot needs refreshing — caching it here avoids framework-thread round-trips
-    // during every recomposite trigger.
+    // during every recomposite trigger. Only write non-null: GameObjectRedrawn can fire mid-redraw
+    // while the draw object is being destroyed, at which point GetActivePlayerMaterialPaths returns
+    // null. Writing null would clear a valid cached snapshot and trigger the all-races bug.
     private void OnLocalPlayerRedrawn()
-        => _activeMtrlSnapshot = penumbra.GetActivePlayerMaterialPaths();
+    {
+        var snapshot = penumbra.GetActivePlayerMaterialPaths();
+        if (snapshot != null) _activeMtrlSnapshot = snapshot;
+    }
 
     private void OnGlamourerStateChanged()
     {
@@ -201,6 +206,16 @@ public class CompositorService : IDisposable
         // keeping the sets permanently unequal and looping.
         LastDiscovered = current;
         TriggerRecomposite("glamourer-design");
+    }
+
+    // Extracts the human character code (e.g. "c0101") from a path like
+    // "chara/human/c0101/obj/body/...". Returns null for non-human paths.
+    private static string? ExtractHumanCharCode(string path)
+    {
+        const string prefix = "chara/human/";
+        if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
+        int slash = path.IndexOf('/', prefix.Length);
+        return slash > prefix.Length ? path[prefix.Length..slash] : null;
     }
 
     // Set-based comparison — order-independent. Discovery sorts by priority but the sort is not
@@ -257,6 +272,14 @@ public class CompositorService : IDisposable
         {
             try { await Task.Delay(200, token); }
             catch (OperationCanceledException) { return; }
+            // If no GameObjectRedrawn has fired yet (e.g. first composite after plugin load),
+            // the cache is cold — fetch once on the framework thread to prime it.
+            if (_activeMtrlSnapshot == null)
+            {
+                try { _activeMtrlSnapshot = await Plugin.Framework.RunOnFrameworkThread(penumbra.GetActivePlayerMaterialPaths); }
+                catch (OperationCanceledException) { return; }
+                if (token.IsCancellationRequested) return;
+            }
             Recomposite(token);
         });
     }
@@ -374,20 +397,42 @@ public class CompositorService : IDisposable
 
                 if (activeMtrl != null)
                 {
+                    // Collect the active character codes (e.g. "c0101") from body materials in the
+                    // snapshot. Used below to filter wrong-race materials in the mid-switch branch.
+                    var activeCharCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var m in activeMtrl)
+                        if (UVRemapService.InferBodyType(m) != null)
+                        {
+                            var code = ExtractHumanCharCode(m);
+                            if (code != null) activeCharCodes.Add(code);
+                        }
+
                     foreach (var key in byMaterial.Keys.Where(k => !activeMtrl.Contains(k)).ToList())
                     {
                         var keyBodyType = UVRemapService.InferBodyType(key);
                         if (keyBodyType != null)
                         {
-                            // Body type is known to be active (some path of that type IS loaded) but
-                            // this specific path isn't in the snapshot → wrong race/body code.
                             if (activeBodyTypes.Contains(keyBodyType))
                             {
+                                // Body type is active but this exact path isn't → wrong race/body code.
                                 log.Debug("[Proteus] Skipping body material (active types={0}): {1}",
                                     _lastCompositedBodyType ?? "none", key);
                                 byMaterial.Remove(key);
                             }
-                            // else: body type absent from snapshot → keep (mid body-type switch)
+                            else
+                            {
+                                // Body type absent — could be mid-switch to a new body type.
+                                // Only keep the mid-switch heuristic for the character's own race;
+                                // filter any other race codes immediately.
+                                var keyCharCode = ExtractHumanCharCode(key);
+                                if (keyCharCode != null && activeCharCodes.Count > 0
+                                    && !activeCharCodes.Contains(keyCharCode))
+                                {
+                                    log.Debug("[Proteus] Skipping body material (wrong race): {0}", key);
+                                    byMaterial.Remove(key);
+                                }
+                                // else: same race, body type absent → keep (mid body-type switch)
+                            }
                         }
                         else
                         {
