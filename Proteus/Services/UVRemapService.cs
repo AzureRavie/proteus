@@ -84,7 +84,7 @@ public class UVRemapService
         {
             if (cache.TryGetValue(key, out var hit)) return hit;
             var map = LoadMap(from, to);
-            cache[key] = map;
+            if (map != null) cache[key] = map;
             return map;
         }
     }

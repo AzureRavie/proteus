@@ -1,0 +1,44 @@
+name: Upload UV Maps
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'uvmaps-*'
+
+permissions:
+  contents: write
+
+jobs:
+  upload:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Sanity-check file sizes
+        shell: pwsh
+        run: |
+          $minBytes = 100MB
+          foreach ($f in @("Proteus\uvmaps\bibo_to_gen3_transfer.tif", "Proteus\uvmaps\gen3_to_bibo_transfer.tif")) {
+            $size = (Get-Item $f).Length
+            if ($size -lt $minBytes) {
+              Write-Error "$f is only $size bytes — looks like an LFS pointer, not the real file. Aborting."
+              exit 1
+            }
+            Write-Host "$f OK ($([math]::Round($size/1MB, 1)) MB)"
+          }
+
+      - name: Create uvmaps-v1 release
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete uvmaps-v1 --yes 2>$null
+          gh release create uvmaps-v1 `
+            --title "UV Transfer Maps v1" `
+            --notes "Static UV transfer map data files for Proteus. Downloaded automatically on first use — do not install manually." `
+            "Proteus\uvmaps\bibo_to_gen3_transfer.tif" `
+            "Proteus\uvmaps\gen3_to_bibo_transfer.tif"

@@ -19,6 +19,7 @@ public class StatusWindow : Window
     private readonly PenumbraBridge penumbra;
     private readonly Configuration config;
     private readonly DesignBindingService designBindings;
+    private readonly UVMapDownloadService uvMapDl;
 
     // Accent used to flag an active design binding (and the mods/colors it drives).
     private static readonly Vector4 BindingAccent = new(0.45f, 0.75f, 1f, 1f);
@@ -39,7 +40,8 @@ public class StatusWindow : Window
         SidecarDiscoveryService discovery,
         PenumbraBridge penumbra,
         Configuration config,
-        DesignBindingService designBindings)
+        DesignBindingService designBindings,
+        UVMapDownloadService uvMapDl)
         : base("Proteus###ProteusStatus", ImGuiWindowFlags.AlwaysAutoResize)
     {
         this.compositor     = compositor;
@@ -47,6 +49,7 @@ public class StatusWindow : Window
         this.penumbra       = penumbra;
         this.config         = config;
         this.designBindings = designBindings;
+        this.uvMapDl        = uvMapDl;
 
         SizeConstraints = new WindowSizeConstraints
         {
@@ -57,6 +60,21 @@ public class StatusWindow : Window
 
     public override void Draw()
     {
+        // ── UV map download banner ────────────────────────────────────────────
+        if (uvMapDl.State == UVMapDownloadState.Downloading)
+        {
+            ImGui.TextColored(new Vector4(1f, 0.8f, 0.2f, 1f), uvMapDl.StatusMessage);
+            ImGui.Separator();
+        }
+        else if (uvMapDl.State == UVMapDownloadState.Failed)
+        {
+            ImGui.TextColored(new Vector4(1f, 0.3f, 0.3f, 1f), uvMapDl.StatusMessage);
+            ImGui.SameLine();
+            if (ImGui.Button("Retry"))
+                uvMapDl.EnsureMapsAsync();
+            ImGui.Separator();
+        }
+
         // ── Toolbar ──────────────────────────────────────────────────────────
         var enabled = config.PluginEnabled;
         if (ImGui.Checkbox("Enabled", ref enabled))

@@ -26,7 +26,9 @@ public sealed class Plugin : IDalamudPlugin
     private readonly TextureLoader textureLoader;
     private readonly SidecarDiscoveryService discovery;
     private readonly UVRemapService uvRemap;
+    private readonly UVMapDownloadService uvMapDl;
     private readonly CompositorService compositor;
+    private volatile bool _disposed;
     private readonly DesignBindingService designBindings;
     private readonly GlamourerDesignWatcher designWatcher;
     private readonly WindowSystem windowSystem;
@@ -47,12 +49,22 @@ public sealed class Plugin : IDalamudPlugin
         textureLoader = new TextureLoader(DataManager, log);
         discovery = new SidecarDiscoveryService(penumbra, log);
         uvRemap = new UVRemapService(log, pluginInterface.AssemblyLocation.DirectoryName!);
+        uvMapDl = new UVMapDownloadService(log, pluginInterface.AssemblyLocation.DirectoryName!);
         compositor = new CompositorService(penumbra, glamourer, discovery, textureLoader, config, log, uvRemap);
+
+        if (!uvMapDl.MapsPresent())
+        {
+            uvMapDl.EnsureMapsAsync(onComplete: () =>
+            {
+                if (!_disposed && config.PluginEnabled && penumbra.IsAvailable)
+                    compositor.TriggerRecomposite("uvmaps-downloaded");
+            });
+        }
         designBindings = new DesignBindingService(penumbra, glamourer, discovery, compositor, config, pluginInterface, framework, log);
         designWatcher = new GlamourerDesignWatcher(designBindings, config.GlamourerDesignDirOverride ?? glamourer.DesignsDirectory, log);
         ipcProvider = new IpcProvider(pluginInterface, compositor, discovery, log);
 
-        statusWindow = new StatusWindow(compositor, discovery, penumbra, config, designBindings);
+        statusWindow = new StatusWindow(compositor, discovery, penumbra, config, designBindings, uvMapDl);
 
         windowSystem = new WindowSystem("Proteus");
         windowSystem.AddWindow(statusWindow);
@@ -85,6 +97,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        _disposed = true;
         CommandManager.RemoveHandler(CommandName);
         PluginInterface.UiBuilder.Draw -= DrawUi;
         PluginInterface.UiBuilder.OpenMainUi -= OpenMainUi;
@@ -93,6 +106,7 @@ public sealed class Plugin : IDalamudPlugin
         ipcProvider.Dispose();
         designWatcher.Dispose();
         designBindings.Dispose();
+        uvMapDl.Dispose();
         compositor.Dispose();
         glamourer.Dispose();
         penumbra.Dispose();

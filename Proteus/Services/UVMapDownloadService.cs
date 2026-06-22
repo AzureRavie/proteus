@@ -1,0 +1,156 @@
+using System;
+using System.IO;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
+using Dalamud.Plugin.Services;
+
+namespace Proteus.Services;
+
+public enum UVMapDownloadState { Idle, Downloading, Done, Failed }
+
+public class UVMapDownloadService : IDisposable
+{
+    private static readonly string BaseUrl =
+        "https://github.com/solona-m/proteus/releases/download/uvmaps-v1/";
+
+    private static readonly string[] MapFiles =
+    [
+        "bibo_to_gen3_transfer.tif",
+        "gen3_to_bibo_transfer.tif",
+    ];
+
+    private readonly IPluginLog log;
+    private readonly string mapsDir;
+    private readonly CancellationTokenSource cts = new();
+
+    public UVMapDownloadState State { get; private set; } = UVMapDownloadState.Idle;
+    public string StatusMessage { get; private set; } = string.Empty;
+
+    public UVMapDownloadService(IPluginLog log, string pluginDir)
+    {
+        this.log = log;
+        mapsDir = Path.Combine(pluginDir, "uvmaps");
+    }
+
+    public bool MapsPresent()
+    {
+        foreach (var file in MapFiles)
+        {
+            var path = Path.Combine(mapsDir, file);
+            if (!File.Exists(path) || new FileInfo(path).Length == 0)
+                return false;
+        }
+        return true;
+    }
+
+    public void EnsureMapsAsync(Action? onComplete = null)
+    {
+        if (State == UVMapDownloadState.Downloading) return;
+        if (MapsPresent())
+        {
+            State = UVMapDownloadState.Done;
+            return;
+        }
+
+        State = UVMapDownloadState.Downloading;
+        StatusMessage = "Downloading UV maps...";
+        Task.Run(() => DownloadAll(onComplete), cts.Token);
+    }
+
+    private async Task DownloadAll(Action? onComplete)
+    {
+        try
+        {
+            Directory.CreateDirectory(mapsDir);
+
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("Proteus-Plugin");
+
+            long totalDownloaded = 0;
+            const long totalExpected = 256L * 1024 * 1024;
+
+            foreach (var file in MapFiles)
+            {
+                var dest = Path.Combine(mapsDir, file);
+                var tmp  = dest + ".tmp";
+
+                if (File.Exists(dest) && new FileInfo(dest).Length > 0)
+                    continue;
+
+                if (File.Exists(tmp))
+                    File.Delete(tmp);
+
+                var url = BaseUrl + file;
+                log.Information("[Proteus] Downloading {0}", url);
+
+                using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                if (!response.IsSuccessStatusCode)
+                {
+                    Fail($"Download failed: HTTP {(int)response.StatusCode} for {file}");
+                    return;
+                }
+
+                await using var src  = await response.Content.ReadAsStreamAsync(cts.Token);
+                await using var dst  = File.Create(tmp);
+
+                var buf = new byte[1024 * 1024]; // 1 MB buffer
+                long fileBytes = 0;
+                long nextReport = 5L * 1024 * 1024;
+                int read;
+
+                while ((read = await src.ReadAsync(buf, cts.Token)) > 0)
+                {
+                    await dst.WriteAsync(buf.AsMemory(0, read), cts.Token);
+                    fileBytes       += read;
+                    totalDownloaded += read;
+
+                    if (totalDownloaded >= nextReport)
+                    {
+                        var mb    = totalDownloaded / (1024 * 1024);
+                        var total = totalExpected   / (1024 * 1024);
+                        StatusMessage = $"Downloading UV maps... ({mb} MB / {total} MB)";
+                        nextReport += 5L * 1024 * 1024;
+                    }
+                }
+
+                if (fileBytes < 100L * 1024 * 1024)
+                {
+                    File.Delete(tmp);
+                    Fail($"Download too small ({fileBytes} bytes) for {file} — possible LFS pointer");
+                    return;
+                }
+
+                File.Move(tmp, dest, overwrite: true);
+                log.Information("[Proteus] UV map ready: {0}", file);
+            }
+
+            State = UVMapDownloadState.Done;
+            StatusMessage = string.Empty;
+            log.Information("[Proteus] UV maps download complete.");
+            onComplete?.Invoke();
+        }
+        catch (OperationCanceledException)
+        {
+            foreach (var file in MapFiles)
+            {
+                var tmp = Path.Combine(mapsDir, file) + ".tmp";
+                if (File.Exists(tmp)) try { File.Delete(tmp); } catch { }
+            }
+            State = UVMapDownloadState.Idle;
+        }
+        catch (Exception ex)
+        {
+            Fail($"Download error: {ex.Message}");
+        }
+    }
+
+    private void Fail(string message)
+    {
+        State = UVMapDownloadState.Failed;
+        StatusMessage = message;
+        log.Error("[Proteus] {0}", message);
+    }
+
+    public void Dispose() => cts.Cancel();
+}
