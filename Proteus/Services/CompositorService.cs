@@ -88,6 +88,7 @@ public class CompositorService : IDisposable
         penumbra.ModDeleted        += OnModDeleted;
         penumbra.PenumbraReady     += OnPenumbraReady;
         penumbra.PlayerCollectionChanged += OnPlayerCollectionChanged;
+        penumbra.LocalPlayerRedrawn      += OnLocalPlayerRedrawn;
         glamourer.LocalPlayerStateChanged += OnGlamourerStateChanged;
     }
 
@@ -98,6 +99,7 @@ public class CompositorService : IDisposable
         penumbra.ModDeleted        -= OnModDeleted;
         penumbra.PenumbraReady     -= OnPenumbraReady;
         penumbra.PlayerCollectionChanged -= OnPlayerCollectionChanged;
+        penumbra.LocalPlayerRedrawn      -= OnLocalPlayerRedrawn;
         glamourer.LocalPlayerStateChanged -= OnGlamourerStateChanged;
 
         currentCts?.Cancel();
@@ -174,6 +176,13 @@ public class CompositorService : IDisposable
         TriggerRecomposite("collection-changed");
     }
 
+    // Called on the framework thread by PenumbraBridge whenever the local player's draw object is
+    // redrawn. Material paths only change when the draw object is recreated, so this is the only
+    // point where the snapshot needs refreshing — caching it here avoids framework-thread round-trips
+    // during every recomposite trigger.
+    private void OnLocalPlayerRedrawn()
+        => _activeMtrlSnapshot = penumbra.GetActivePlayerMaterialPaths();
+
     private void OnGlamourerStateChanged()
     {
         // Glamourer applied a design / reset / reapplied state on the local player.
@@ -248,12 +257,6 @@ public class CompositorService : IDisposable
         {
             try { await Task.Delay(200, token); }
             catch (OperationCanceledException) { return; }
-            // GetActivePlayerMaterialPaths reads Dalamud's ObjectTable via Penumbra IPC,
-            // which is only valid on the game's main thread. Mod events fire on a background
-            // thread, so capture the snapshot on the framework thread before compositing.
-            try { _activeMtrlSnapshot = await Plugin.Framework.RunOnFrameworkThread(penumbra.GetActivePlayerMaterialPaths); }
-            catch (OperationCanceledException) { return; }
-            if (token.IsCancellationRequested) return;
             Recomposite(token);
         });
     }
@@ -1111,30 +1114,29 @@ public class CompositorService : IDisposable
         {
             try
             {
+                // Wait for GameObjectRedrawn to fire and update the cached snapshot via OnLocalPlayerRedrawn.
                 await Task.Delay(600);
-                await Plugin.Framework.RunOnFrameworkThread(() =>
+
+                var snapshot = _activeMtrlSnapshot;
+                if (snapshot == null) return;
+
+                var newBodyTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var m in snapshot)
                 {
-                    var snapshot = penumbra.GetActivePlayerMaterialPaths();
-                    if (snapshot == null) return;
+                    var bt = UVRemapService.InferBodyType(m);
+                    if (bt != null) newBodyTypes.Add(bt);
+                }
+                var newBodyTypeKey = newBodyTypes.Count > 0
+                    ? string.Join(",", newBodyTypes.OrderBy(x => x))
+                    : null;
 
-                    var newBodyTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var m in snapshot)
-                    {
-                        var bt = UVRemapService.InferBodyType(m);
-                        if (bt != null) newBodyTypes.Add(bt);
-                    }
-                    var newBodyTypeKey = newBodyTypes.Count > 0
-                        ? string.Join(",", newBodyTypes.OrderBy(x => x))
-                        : null;
-
-                    if (newBodyTypeKey != null &&
-                        !string.Equals(newBodyTypeKey, _lastCompositedBodyType, StringComparison.OrdinalIgnoreCase))
-                    {
-                        log.Debug("[Proteus] Body types changed post-redraw ({0} → {1}) — re-compositing",
-                            _lastCompositedBodyType ?? "none", newBodyTypeKey);
-                        TriggerRecomposite("body-type-switch");
-                    }
-                });
+                if (newBodyTypeKey != null &&
+                    !string.Equals(newBodyTypeKey, _lastCompositedBodyType, StringComparison.OrdinalIgnoreCase))
+                {
+                    log.Debug("[Proteus] Body types changed post-redraw ({0} → {1}) — re-compositing",
+                        _lastCompositedBodyType ?? "none", newBodyTypeKey);
+                    TriggerRecomposite("body-type-switch");
+                }
             }
             catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException) { }
         });

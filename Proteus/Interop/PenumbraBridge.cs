@@ -47,6 +47,8 @@ public class PenumbraBridge : IDisposable
     public event Action<string>? ModDeleted;
     /// <summary>Fired when the collection assigned to the local player changes.</summary>
     public event Action? PlayerCollectionChanged;
+    /// <summary>Fired on the framework thread each time the local player's draw object is redrawn.</summary>
+    public event Action? LocalPlayerRedrawn;
     /// <summary>Fired when Penumbra becomes available (including late initialization after plugin load).</summary>
     public event Action? PenumbraReady;
 
@@ -109,6 +111,8 @@ public class PenumbraBridge : IDisposable
         bool first = _lastPlayerCollection == null;
         _lastPlayerCollection = current;
         if (!first) PlayerCollectionChanged?.Invoke();
+
+        LocalPlayerRedrawn?.Invoke();
     }
 
     private void CheckAvailability()
