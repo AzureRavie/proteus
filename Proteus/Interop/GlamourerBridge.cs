@@ -32,6 +32,13 @@ public class GlamourerBridge : IDisposable
     /// </summary>
     public event Action<StateChangeType>? LocalPlayerStateChangedTyped;
 
+    /// <summary>
+    /// Fired when the local player's character customization changes in a way that may affect
+    /// which race/body materials are active (Model or EntireCustomize), without necessarily
+    /// changing the mod set. Consumers should recomposite unconditionally.
+    /// </summary>
+    public event Action? LocalPlayerCustomizationChanged;
+
     public GlamourerBridge(IDalamudPluginInterface pluginInterface, IObjectTable objectTable, IPluginLog log)
     {
         this.log             = log;
@@ -100,13 +107,20 @@ public class GlamourerBridge : IDisposable
 
     private void OnStateChanged(nint address, StateChangeType changeType)
     {
-        // Only care about state-wide changes that can affect which mods are active.
-        // Individual tweaks (Customize, Equip, Stains, etc.) don't touch mod settings.
-        if (changeType is not (StateChangeType.Design or StateChangeType.Reset or StateChangeType.Reapply))
-            return;
-
         var localPlayer = objectTable.LocalPlayer;
         if (localPlayer == null || localPlayer.Address != address) return;
+
+        // Model/EntireCustomize can change race/body without touching mod settings.
+        // Fire the customization event so the compositor recomposites unconditionally.
+        if (changeType is StateChangeType.Model or StateChangeType.EntireCustomize)
+        {
+            LocalPlayerCustomizationChanged?.Invoke();
+            return;
+        }
+
+        // Only care about state-wide changes that can affect which mods are active.
+        if (changeType is not (StateChangeType.Design or StateChangeType.Reset or StateChangeType.Reapply))
+            return;
 
         // Typed first so the design-binding heuristic can set its color override before the
         // compositor's (debounced) recomposite reads it.

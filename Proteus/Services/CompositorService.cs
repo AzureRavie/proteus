@@ -55,9 +55,16 @@ public class CompositorService : IDisposable
     // Snapshot of the player's active material game paths, captured on the main thread at trigger
     // time so the background recomposite can filter without touching main-thread-only IPCs.
     private volatile HashSet<string>? _activeMtrlSnapshot;
-    // Body type ("bibo"/"gen3"/"gen2") that the last completed Recomposite() actually composited for.
-    // Used by the post-redraw check to detect body-type switches and trigger a corrective composite.
+    // Body type and char codes that the last completed Recomposite() actually composited for.
+    // Used by the post-redraw check to detect switches and trigger a corrective composite.
     private volatile string? _lastCompositedBodyType;
+    private volatile string? _lastCompositedCharCodes;
+    // Set to 1 when a Glamourer customization change (race/body) is pending a recomposite.
+    // Cleared by OnLocalPlayerRedrawn (preferred — snapshot is fresh) or a 2s timeout fallback.
+    private int _pendingCustomizationRecomposite = 0;
+    // Glamourer's currently-displayed char code (e.g. "c1801"), updated on the framework thread.
+    // Null when Glamourer isn't available or hasn't overridden the race.
+    private volatile string? _glamourerCharCode;
 
     public CompositorResult? LastResult { get; private set; }
     public List<OverlayEntry> LastDiscovered { get; private set; } = [];
@@ -88,8 +95,9 @@ public class CompositorService : IDisposable
         penumbra.ModDeleted        += OnModDeleted;
         penumbra.PenumbraReady     += OnPenumbraReady;
         penumbra.PlayerCollectionChanged += OnPlayerCollectionChanged;
-        penumbra.LocalPlayerRedrawn      += OnLocalPlayerRedrawn;
-        glamourer.LocalPlayerStateChanged += OnGlamourerStateChanged;
+        penumbra.LocalPlayerRedrawn            += OnLocalPlayerRedrawn;
+        glamourer.LocalPlayerStateChanged      += OnGlamourerStateChanged;
+        glamourer.LocalPlayerCustomizationChanged += OnGlamourerCustomizationChanged;
     }
 
     public void Dispose()
@@ -99,8 +107,9 @@ public class CompositorService : IDisposable
         penumbra.ModDeleted        -= OnModDeleted;
         penumbra.PenumbraReady     -= OnPenumbraReady;
         penumbra.PlayerCollectionChanged -= OnPlayerCollectionChanged;
-        penumbra.LocalPlayerRedrawn      -= OnLocalPlayerRedrawn;
-        glamourer.LocalPlayerStateChanged -= OnGlamourerStateChanged;
+        penumbra.LocalPlayerRedrawn              -= OnLocalPlayerRedrawn;
+        glamourer.LocalPlayerStateChanged        -= OnGlamourerStateChanged;
+        glamourer.LocalPlayerCustomizationChanged -= OnGlamourerCustomizationChanged;
 
         currentCts?.Cancel();
         currentCts?.Dispose();
@@ -186,6 +195,45 @@ public class CompositorService : IDisposable
     {
         var snapshot = penumbra.GetActivePlayerMaterialPaths();
         if (snapshot != null) _activeMtrlSnapshot = snapshot;
+
+        RefreshGlamourerCharCode();
+
+        if (Interlocked.Exchange(ref _pendingCustomizationRecomposite, 0) == 1)
+            TriggerRecomposite("glamourer-customization");
+    }
+
+    private void OnGlamourerCustomizationChanged()
+    {
+        if (!config.PluginEnabled) return;
+        // Read the Glamourer-displayed char code now (framework thread), before it changes again.
+        RefreshGlamourerCharCode();
+        // Don't recomposite immediately — the snapshot still has the old race because
+        // GameObjectRedrawn hasn't fired yet. Set the pending flag; OnLocalPlayerRedrawn
+        // will fire the recomposite once the snapshot is fresh.
+        Interlocked.Exchange(ref _pendingCustomizationRecomposite, 1);
+        // Fallback: if GameObjectRedrawn never fires (e.g. redraw suppressed), trigger anyway.
+        _ = Task.Delay(2000).ContinueWith(_ =>
+        {
+            if (Interlocked.Exchange(ref _pendingCustomizationRecomposite, 0) == 1)
+                TriggerRecomposite("glamourer-customization-timeout");
+        });
+    }
+
+    // Must be called on the framework thread. Caches the char code Glamourer is currently
+    // displaying so Recomposite (background thread) can filter without an IPC call.
+    private void RefreshGlamourerCharCode()
+    {
+        try
+        {
+            var state = glamourer.GetObjectState(0);
+            var cust  = state?["Customize"];
+            if (cust == null) { _glamourerCharCode = null; return; }
+            var race  = cust["Race"]?["Value"]?.ToObject<byte>() ?? 0;
+            var tribe = cust["Clan"]?["Value"]?.ToObject<byte>() ?? 0;
+            var sex   = cust["Gender"]?["Value"]?.ToObject<byte>() ?? 0;
+            _glamourerCharCode = BodyCodeFromCustomize(race, tribe, sex);
+        }
+        catch { _glamourerCharCode = null; }
     }
 
     private void OnGlamourerStateChanged()
@@ -398,7 +446,8 @@ public class CompositorService : IDisposable
                 if (activeMtrl != null)
                 {
                     // Collect the active character codes (e.g. "c0101") from body materials in the
-                    // snapshot. Used below to filter wrong-race materials in the mid-switch branch.
+                    // snapshot. Used below to filter wrong-race materials in the mid-switch branch,
+                    // and stored for the post-redraw race-change check.
                     var activeCharCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     foreach (var m in activeMtrl)
                         if (UVRemapService.InferBodyType(m) != null)
@@ -406,15 +455,37 @@ public class CompositorService : IDisposable
                             var code = ExtractHumanCharCode(m);
                             if (code != null) activeCharCodes.Add(code);
                         }
+                    _lastCompositedCharCodes = activeCharCodes.Count > 0
+                        ? string.Join(",", activeCharCodes.OrderBy(x => x))
+                        : null;
+
+                    // Glamourer may be displaying a different race than the draw object uses
+                    // (GetGameObjectResourcePaths returns the actual race, not the visual override).
+                    // If Glamourer's char code differs from the snapshot, use it as the sole
+                    // effective char code so overlays authored for the displayed race are kept.
+                    string? glamCode = _glamourerCharCode;
+                    bool glamOverride = glamCode != null && !activeCharCodes.Contains(glamCode);
+                    var effectiveCharCodes = glamOverride
+                        ? new HashSet<string>(StringComparer.OrdinalIgnoreCase) { glamCode! }
+                        : activeCharCodes;
+                    if (glamOverride)
+                        log.Debug("[Proteus] Glamourer race override: snapshot={0} → displayed={1}",
+                            _lastCompositedCharCodes ?? "none", glamCode!);
 
                     foreach (var key in byMaterial.Keys.Where(k => !activeMtrl.Contains(k)).ToList())
                     {
                         var keyBodyType = UVRemapService.InferBodyType(key);
                         if (keyBodyType != null)
                         {
+                            var keyCharCode = ExtractHumanCharCode(key);
                             if (activeBodyTypes.Contains(keyBodyType))
                             {
-                                // Body type is active but this exact path isn't → wrong race/body code.
+                                // Body type is active. Keep if the char code matches the effective
+                                // race (handles Glamourer display override — actual snapshot has a
+                                // different char code, but the overlay is authored for glamCode).
+                                if (keyCharCode != null && effectiveCharCodes.Count > 0
+                                    && effectiveCharCodes.Contains(keyCharCode))
+                                    continue; // keep
                                 log.Debug("[Proteus] Skipping body material (active types={0}): {1}",
                                     _lastCompositedBodyType ?? "none", key);
                                 byMaterial.Remove(key);
@@ -422,11 +493,9 @@ public class CompositorService : IDisposable
                             else
                             {
                                 // Body type absent — could be mid-switch to a new body type.
-                                // Only keep the mid-switch heuristic for the character's own race;
-                                // filter any other race codes immediately.
-                                var keyCharCode = ExtractHumanCharCode(key);
-                                if (keyCharCode != null && activeCharCodes.Count > 0
-                                    && !activeCharCodes.Contains(keyCharCode))
+                                // Only keep the mid-switch heuristic for the effective race.
+                                if (keyCharCode != null && effectiveCharCodes.Count > 0
+                                    && !effectiveCharCodes.Contains(keyCharCode))
                                 {
                                     log.Debug("[Proteus] Skipping body material (wrong race): {0}", key);
                                     byMaterial.Remove(key);
@@ -1165,22 +1234,32 @@ public class CompositorService : IDisposable
                 var snapshot = _activeMtrlSnapshot;
                 if (snapshot == null) return;
 
-                var newBodyTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var newBodyTypes  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var newCharCodes  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var m in snapshot)
                 {
                     var bt = UVRemapService.InferBodyType(m);
-                    if (bt != null) newBodyTypes.Add(bt);
+                    if (bt != null)
+                    {
+                        newBodyTypes.Add(bt);
+                        var code = ExtractHumanCharCode(m);
+                        if (code != null) newCharCodes.Add(code);
+                    }
                 }
-                var newBodyTypeKey = newBodyTypes.Count > 0
-                    ? string.Join(",", newBodyTypes.OrderBy(x => x))
-                    : null;
+                var newBodyTypeKey  = newBodyTypes.Count > 0 ? string.Join(",", newBodyTypes.OrderBy(x => x))  : null;
+                var newCharCodeKey  = newCharCodes.Count > 0 ? string.Join(",", newCharCodes.OrderBy(x => x))  : null;
 
-                if (newBodyTypeKey != null &&
-                    !string.Equals(newBodyTypeKey, _lastCompositedBodyType, StringComparison.OrdinalIgnoreCase))
+                bool bodyTypeChanged = newBodyTypeKey != null &&
+                    !string.Equals(newBodyTypeKey, _lastCompositedBodyType, StringComparison.OrdinalIgnoreCase);
+                bool charCodeChanged = newCharCodeKey != null &&
+                    !string.Equals(newCharCodeKey, _lastCompositedCharCodes, StringComparison.OrdinalIgnoreCase);
+
+                if (bodyTypeChanged || charCodeChanged)
                 {
-                    log.Debug("[Proteus] Body types changed post-redraw ({0} → {1}) — re-compositing",
-                        _lastCompositedBodyType ?? "none", newBodyTypeKey);
-                    TriggerRecomposite("body-type-switch");
+                    log.Debug("[Proteus] Post-redraw correction: bodyType={0}→{1} charCode={2}→{3}",
+                        _lastCompositedBodyType ?? "none", newBodyTypeKey ?? "none",
+                        _lastCompositedCharCodes ?? "none", newCharCodeKey ?? "none");
+                    TriggerRecomposite("post-redraw-correction");
                 }
             }
             catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException) { }
@@ -1381,20 +1460,6 @@ public class CompositorService : IDisposable
             hex = string.Concat(hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]);
         int v = Convert.ToInt32(hex, 16);
         return ((v >> 16 & 0xFF) / 255f, (v >> 8 & 0xFF) / 255f, (v & 0xFF) / 255f);
-    }
-
-    // Returns the FFXIV body model character code (e.g. "c0201") for the local player,
-    // accounting for mid-body sharing (Elezen/Lalafell/Miqo'te/Roegadyn all use c0201/c0101).
-    // Returns null if the player is not in game or the race cannot be determined.
-    private static string? GetPlayerBodyCode()
-    {
-        try
-        {
-            var ps = Plugin.PlayerState;
-            if (ps == null || !ps.IsLoaded) return null;
-            return BodyCodeFromCustomize((byte)ps.Race.RowId, (byte)ps.Tribe.RowId, (byte)ps.Sex);
-        }
-        catch { return null; }
     }
 
     internal static string? BodyCodeFromCustomize(byte race, byte tribe, byte sex)
